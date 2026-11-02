@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { nowIso } from './util.js';
+import { normalizePhrase, nowIso } from './util.js';
 
 export type DB = Database.Database;
 
@@ -14,6 +14,8 @@ export function getDb(): DB {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
+  // expose normalizePhrase to SQL so keyword/lexicon matching uses one identical normalization
+  db.function('norm', (p: unknown) => normalizePhrase(String(p ?? '')));
   runMigrations(db);
   seed(db);
   _db = db;

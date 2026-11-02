@@ -11,6 +11,7 @@ async function main() {
 
   // resume orphaned runs from a previous crash
   db.prepare("UPDATE runs SET status='failed', finished_at=datetime('now') WHERE status IN ('pending','running')").run();
+  db.prepare("UPDATE run_items SET status='failed', error='interrupted (server restart)' WHERE status IN ('pending','running')").run();
 
   const app = await buildServer();
   await app.listen({ port: config.port, host: config.host });

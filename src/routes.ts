@@ -57,7 +57,7 @@ export function registerApi(app: FastifyInstance): void {
       .prepare(
         `SELECT k.*, s.name AS site_name, s.flag AS site_flag,
            (SELECT COUNT(*) FROM lexicon l
-             WHERE l.phrase_norm = LOWER(k.text) OR l.phrase_norm LIKE LOWER(k.text) || ' %') AS suggestion_count,
+             WHERE l.mid = k.mid AND l.phrase_norm LIKE '%' || norm(k.text) || '%') AS suggestion_count,
            (SELECT MAX(ri.finished_at) FROM run_items ri WHERE ri.keyword_id = k.id AND ri.status='done') AS last_fetched
          FROM keywords k LEFT JOIN sites s ON s.mid = k.mid ${w}
          ORDER BY k.created_at DESC, k.id DESC`,

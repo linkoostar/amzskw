@@ -1,6 +1,6 @@
 import { ensureDbDir } from './config.js';
 import { buildServer } from './server.js';
-import { getDb } from './db.js';
+import { getDb, pruneFetchLog } from './db.js';
 import { startScheduler } from './scheduler.js';
 import { config } from './config.js';
 
@@ -12,6 +12,14 @@ async function main() {
   // resume orphaned runs from a previous crash
   db.prepare("UPDATE runs SET status='failed', finished_at=datetime('now') WHERE status IN ('pending','running')").run();
   db.prepare("UPDATE run_items SET status='failed', error='interrupted (server restart)' WHERE status IN ('pending','running')").run();
+
+  // retention: archive pruning now and then daily (keep setting disabled = 0)
+  const pruned = pruneFetchLog();
+  if (pruned > 0) console.log(`[amz-lexicon] fetch_log retention: removed ${pruned} expired payloads`);
+  setInterval(() => {
+    const n = pruneFetchLog();
+    if (n > 0) console.log(`[amz-lexicon] fetch_log retention: removed ${n} expired payloads`);
+  }, 24 * 3600 * 1000).unref();
 
   const app = await buildServer();
   await app.listen({ port: config.port, host: config.host });

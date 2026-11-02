@@ -153,3 +153,13 @@ export function getAllSettings(): Record<string, string> {
   for (const r of rows) out[r.key] = r.value;
   return out;
 }
+
+/** Drop archived raw payloads older than `fetch_log_keep_days` (0 disables retention cleanup). */
+export function pruneFetchLog(): number {
+  const days = getSettingNum('fetch_log_keep_days');
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const r = getDb()
+    .prepare("DELETE FROM fetch_log WHERE created_at < datetime('now', ?)")
+    .run(`-${Math.round(days)} days`);
+  return Number(r.changes) || 0;
+}

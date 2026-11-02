@@ -44,7 +44,11 @@ async function onScheduledFire(): Promise<void> {
     await sleep(delay);
   }
   try {
-    activeRunId = startRun('weekly');
+    // clear the local guard when the run finishes; otherwise every later weekly
+    // trigger would be skipped as "previous run still active" until a restart
+    activeRunId = startRun('weekly', undefined, () => {
+      activeRunId = null;
+    });
     console.log(`[scheduler] weekly run started, id=${activeRunId}`);
   } catch (e) {
     console.error('[scheduler] failed to start weekly run:', (e as Error).message);

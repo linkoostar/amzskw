@@ -126,7 +126,11 @@ export function cancelRun(runId: number): boolean {
   return true;
 }
 
-export function startRun(triggerType: 'weekly' | 'manual', keywordIds?: number[]): number {
+export function startRun(
+  triggerType: 'weekly' | 'manual',
+  keywordIds?: number[],
+  onFinish?: (runId: number) => void,
+): number {
   const db = getDb();
   const kws = keywordIds && keywordIds.length > 0
     ? db.prepare(`SELECT id, text, mid, alias FROM keywords WHERE id IN (${keywordIds.map(() => '?').join(',')}) AND status='active' ORDER BY id`).all(...keywordIds)
@@ -152,7 +156,10 @@ export function startRun(triggerType: 'weekly' | 'manual', keywordIds?: number[]
   // fire and forget
   void processRun(runId, controller)
     .catch((e) => console.error(`[crawler] run ${runId} crashed:`, e))
-    .finally(() => activeRuns.delete(runId));
+    .finally(() => {
+      activeRuns.delete(runId);
+      onFinish?.(runId);
+    });
 
   return runId;
 }

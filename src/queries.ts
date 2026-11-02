@@ -90,12 +90,24 @@ export interface TrendMatrix {
  */
 export function reattachOrphanHistory(text: string, mid: string, newKeywordId: number): number {
   const db = getDb();
-  return db
-    .prepare(
-      `UPDATE run_items SET keyword_id = ?
-       WHERE keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?`,
-    )
-    .run(newKeywordId, text, mid).changes;
+  const tx = db.transaction((): number => {
+    // re-link the archived snapshots FIRST: trend queries filter on suggestions_raw.keyword_id,
+    // so relinking only run_items would restore the columns but leave every row empty.
+    db.prepare(
+      `UPDATE suggestions_raw SET keyword_id = ?
+       WHERE run_item_id IN (
+         SELECT id FROM run_items
+         WHERE keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?
+       )`,
+    ).run(newKeywordId, text, mid);
+    return db
+      .prepare(
+        `UPDATE run_items SET keyword_id = ?
+         WHERE keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?`,
+      )
+      .run(newKeywordId, text, mid).changes;
+  });
+  return tx();
 }
 
 export function getTrendMatrix(keywordId: number, runsLimit = 12): TrendMatrix | null {

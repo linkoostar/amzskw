@@ -126,6 +126,15 @@ function liveGuard(key: ApiKeyRow, clientId: string): void {
   }
 }
 
+/** Concurrency guard for expand jobs, checked before charging credits. */
+function ensureExpandCapacity(): void {
+  pruneExpandJobs();
+  const running = [...expandJobs.values()].filter((j) => j.status === 'running').length;
+  if (running >= 2) {
+    throw new McpToolError('another expand job is still running (max 2 concurrent server-wide). Poll its job_id with get_expand_job and try again later.');
+  }
+}
+
 /** Merge live-fetched phrases into the persistent lexicon + archive raw payloads + auto-seed a PAUSED keyword. */
 function persistLiveResults(mid: string, seedKeyword: string, phrases: string[], rawBodies: string[], clientId: string) {
   let stored = 0;
@@ -173,9 +182,24 @@ function persistLiveResults(mid: string, seedKeyword: string, phrases: string[],
   return { stored, autoSeedCreated };
 }
 
-/** wrap a tool handler with credit charging */
-function billable(key: ApiKeyRow, clientId: string, tool: string, handler: (args: any) => Promise<unknown>) {
+/** wrap a tool handler with credit charging. `precheck` runs BEFORE charging so a refused
+ *  call (live disabled, quota reached, concurrency full) never costs the caller credits. */
+function billable(
+  key: ApiKeyRow,
+  clientId: string,
+  tool: string,
+  handler: (args: any) => Promise<unknown>,
+  precheck?: () => void,
+) {
   return async (args: any) => {
+    if (precheck) {
+      try {
+        precheck();
+      } catch (e) {
+        if (e instanceof McpToolError) return errorResult(e.message);
+        throw e;
+      }
+    }
     const price = getToolPrice(tool);
     let balance: number;
     try {
@@ -287,29 +311,34 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
         limit: z.number().optional().default(15).describe('Max suggestions (1-30)'),
       },
     },
-    billable(key, clientId, 'search_suggestions', async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
-      liveGuard(key, clientId);
-      const mid = args.mid ?? 'ATVPDKIKX0DER';
-      const res = await liveFetch({
-        prefix: args.keyword,
-        mid,
-        alias: args.alias ?? 'aps',
-        limit: Math.min(30, Math.max(1, args.limit ?? 15)),
-      });
-      const values = res.suggestions.map((s) => s.value);
-      const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, values, [res.body], clientId);
-      return {
-        keyword: args.keyword,
-        mid,
-        suggestions: res.suggestions.map((s, i) => ({ position: i + 1, value: s.value, strategyId: s.strategyId })),
-        persisted_to_lexicon: stored,
-        auto_seed_created: autoSeedCreated,
-        auto_seed_note: autoSeedCreated
-          ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
-          : undefined,
-        fetched_at: new Date().toISOString(),
-      };
-    }),
+    billable(
+      key,
+      clientId,
+      'search_suggestions',
+      async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
+        const mid = args.mid ?? 'ATVPDKIKX0DER';
+        const res = await liveFetch({
+          prefix: args.keyword,
+          mid,
+          alias: args.alias ?? 'aps',
+          limit: Math.min(30, Math.max(1, args.limit ?? 15)),
+        });
+        const values = res.suggestions.map((s) => s.value);
+        const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, values, [res.body], clientId);
+        return {
+          keyword: args.keyword,
+          mid,
+          suggestions: res.suggestions.map((s, i) => ({ position: i + 1, value: s.value, strategyId: s.strategyId })),
+          persisted_to_lexicon: stored,
+          auto_seed_created: autoSeedCreated,
+          auto_seed_note: autoSeedCreated
+            ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
+            : undefined,
+          fetched_at: new Date().toISOString(),
+        };
+      },
+      () => liveGuard(key, clientId),
+    ),
   );
 
   server.registerTool(
@@ -335,12 +364,6 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
       clientId,
       'search_suggestions_expand',
       async (args: { keyword: string; mid?: string; alias?: string; limit?: number; expand_top?: number; letters?: string }) => {
-        liveGuard(key, clientId);
-        pruneExpandJobs();
-        const running = [...expandJobs.values()].filter((j) => j.status === 'running').length;
-        if (running >= 2) {
-          throw new McpToolError('another expand job is still running (max 2 concurrent server-wide). Poll its job_id with get_expand_job and try again later.');
-        }
         const id = `exp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
         const job: ExpandJob = {
           id, keyId: key.id, clientId,
@@ -360,6 +383,10 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
           how_to_get_results: 'poll tool get_expand_job with {"job_id": "' + id + '"} every 10-20 seconds until status is "done"',
           note: 'credits were charged at start; the job keeps running server-side even if you disconnect',
         };
+      },
+      () => {
+        liveGuard(key, clientId);
+        ensureExpandCapacity();
       },
     ),
   );

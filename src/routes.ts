@@ -136,12 +136,21 @@ export function registerApi(app: FastifyInstance): void {
     if (!kw) return { ok: true, purged: 0 };
 
     if (purge) {
+      // scope = this keyword's snapshots, including orphaned rows from earlier deletions
+      // of the same text+site (they were created under a now-deleted keyword id).
+      const scopeSql =
+        `(ri.keyword_id = ? OR (ri.keyword_id IS NULL AND ri.keyword_text = ? COLLATE NOCASE AND ri.mid = ?))`;
       const tx = db.transaction(() => {
         // 1) lexicon: remove suggestions discovered under this seed, unless also
         //    referenced by another keyword's history (shared words survive)
         const mine = (
-          db.prepare('SELECT DISTINCT phrase_norm FROM suggestions_raw WHERE keyword_id = ?').all(id) as
-            Array<{ phrase_norm: string }>
+          db
+            .prepare(
+              `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+               JOIN run_items ri ON ri.id = s.run_item_id
+               WHERE ${scopeSql}`,
+            )
+            .all(id, kw.text, kw.mid) as Array<{ phrase_norm: string }>
         ).map((r) => r.phrase_norm);
         let purgedLex = 0;
         if (mine.length > 0) {
@@ -149,10 +158,11 @@ export function registerApi(app: FastifyInstance): void {
             (
               db
                 .prepare(
-                  `SELECT DISTINCT phrase_norm FROM suggestions_raw
-                   WHERE keyword_id != ? AND phrase_norm IN (${mine.map(() => '?').join(',')})`,
+                  `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+                   JOIN run_items ri ON ri.id = s.run_item_id
+                   WHERE NOT ${scopeSql} AND s.phrase_norm IN (${mine.map(() => '?').join(',')})`,
                 )
-                .all(id, ...mine) as Array<{ phrase_norm: string }>
+                .all(id, kw.text, kw.mid, ...mine) as Array<{ phrase_norm: string }>
             ).map((r) => r.phrase_norm),
           );
           const toDel = mine.filter((p) => !others.has(p));
@@ -164,7 +174,10 @@ export function registerApi(app: FastifyInstance): void {
           }
         }
         // 2) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
-        db.prepare('DELETE FROM suggestions_raw WHERE keyword_id = ?').run(id);
+        db.prepare(
+          `DELETE FROM suggestions_raw
+           WHERE run_item_id IN (SELECT ri.id FROM run_items ri WHERE ${scopeSql})`,
+        ).run(id, kw.text, kw.mid);
         db.prepare(
           'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
         ).run(id, kw.text, kw.mid);

@@ -155,6 +155,74 @@ export function getAllSettings(): Record<string, string> {
   return out;
 }
 
+/** One-time repair of live provenance. Migration 008 backfilled provenance from each
+ *  archived request's `prefix`, so expansion requests were recorded as separate seeds
+ *  (e.g. "phone case a"). Rebuild it from the job URL, which carries the true seed, so
+ *  purge / shared-word protection works again. Requires the archived live payloads. */
+export function repairLiveProvenance(): void {
+  if (getSetting('live_provenance_rebuild_v1') === 'done') return;
+  const db = getDb();
+  const del = db.prepare("DELETE FROM lexicon_sources WHERE source = 'live'");
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO lexicon_sources(mid, phrase_norm, seed_text, source, last_seen_at)
+     VALUES (?, ?, ?, 'live', ?)`,
+  );
+  const page = db.prepare(
+    `SELECT id, url, response_body, created_at FROM fetch_log
+     WHERE url LIKE 'mcp://live/%' AND ok = 1 AND response_body <> '' AND id > ?
+     ORDER BY id LIMIT 500`,
+  );
+  let rebuilt = 0;
+  let skipped = 0;
+  del.run();
+  // read a page BEFORE writing it: an open statement blocks writes on the same connection
+  let lastId = 0;
+  for (;;) {
+    const rows = page.all(lastId) as Array<{ id: number; url: string; response_body: string; created_at: string }>;
+    if (rows.length === 0) break;
+    lastId = rows[rows.length - 1].id;
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const rest = row.url.slice('mcp://live/'.length);
+        const slash = rest.indexOf('/');
+        if (slash <= 0) {
+          skipped++;
+          continue;
+        }
+        const mid = rest.slice(0, slash);
+        let seed = '';
+        try {
+          seed = decodeURIComponent(rest.slice(slash + 1)).trim();
+        } catch {
+          skipped++;
+          continue;
+        }
+        if (!seed) {
+          skipped++;
+          continue;
+        }
+        let body: { suggestions?: Array<{ value?: unknown }> };
+        try {
+          body = JSON.parse(row.response_body);
+        } catch {
+          skipped++;
+          continue;
+        }
+        const suggestions = Array.isArray(body.suggestions) ? body.suggestions : [];
+        for (const s of suggestions) {
+          const norm = normalizePhrase(String(s?.value ?? ''));
+          if (!norm) continue;
+          ins.run(mid, norm, seed, row.created_at || nowIso());
+          rebuilt++;
+        }
+      }
+    });
+    tx();
+  }
+  setSetting('live_provenance_rebuild_v1', 'done');
+  console.log(`[db] live provenance rebuilt: ${rebuilt} rows (${skipped} archived payloads skipped)`);
+}
+
 /** Drop archived raw payloads older than `fetch_log_keep_days` (0 disables retention cleanup). */
 export function pruneFetchLog(): number {
   const days = getSettingNum('fetch_log_keep_days');

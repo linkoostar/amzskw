@@ -1,6 +1,6 @@
 import { ensureDbDir } from './config.js';
 import { buildServer } from './server.js';
-import { getDb, pruneFetchLog } from './db.js';
+import { getDb, pruneFetchLog, repairLiveProvenance } from './db.js';
 import { startScheduler } from './scheduler.js';
 import { config } from './config.js';
 
@@ -12,6 +12,10 @@ async function main() {
   // resume orphaned runs from a previous crash
   db.prepare("UPDATE runs SET status='failed', finished_at=datetime('now') WHERE status IN ('pending','running')").run();
   db.prepare("UPDATE run_items SET status='failed', error='interrupted (server restart)' WHERE status IN ('pending','running')").run();
+
+  // one-time: rebuild live provenance from the archived payloads' job URL instead of
+  // the per-request `prefix` (old expansion rows were attributed to bogus seeds)
+  repairLiveProvenance();
 
   // retention: archive pruning now and then daily (keep setting disabled = 0)
   const pruned = pruneFetchLog();

@@ -318,7 +318,22 @@ const App = {
       if (!confirm(`清理种子词「${seed}」的残留联想词？\n\n· 仅删除只由该种子词发现的联想词；\n· 同时被其他种子词发现的会保留；\n· 不可恢复（不会删除关键词与抓取历史）。`)) return;
       try {
         const r = await api('POST', '/api/lexicon/purge-seed', { text: seed, mid: this.lexMid });
-        this.notify(`已清理 ${r.purged_lexicon} 条联想词`);
+        this.notify(r.purged_lexicon > 0
+          ? `已清理 ${r.purged_lexicon} 条联想词`
+          : '未找到可精确归属的残留；如页面仍有该词的联想词，请用「强制清理」');
+        this.loadLexicon();
+      } catch (e) { this.handleErr(e); }
+    },
+    async forcePurgeSeedLexicon() {
+      const text = prompt('强制清理：输入已删除的种子词（按包含匹配）：', this.lexQuery);
+      if (text === null) return;
+      const seed = text.trim();
+      if (!seed) return;
+      if (!this.lexMid) { this.notify('请先在站点下拉框选择站点，再清理残留词库'); return; }
+      if (!confirm(`⚠ 强制清理「${seed}」的残留？\n\n· 将删除本站点所有包含「${seed}」的联想词；\n· 会忽略“其他种子词也发现过”的共享保护；\n· 仅删除词库，不影响关键词与抓取历史；\n· 不可恢复。`)) return;
+      try {
+        const r = await api('POST', '/api/lexicon/purge-seed', { text: seed, mid: this.lexMid, force: true });
+        this.notify(`已强制清理 ${r.purged_lexicon} 条联想词`);
         this.loadLexicon();
       } catch (e) { this.handleErr(e); }
     },
@@ -612,7 +627,8 @@ const App = {
           <input v-model="lexQuery" placeholder="搜索词库，如 starlink" style="flex:1" @keyup.enter="lexPage=0;loadLexicon()">
           <select v-model="lexMid"><option value="">全部站点</option><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
           <button class="btn primary" @click="lexPage=0;loadLexicon()">搜索</button>
-          <button class="btn sm danger" @click="purgeSeedLexicon" title="清理已删除关键词残留的联想词">清理残留</button>
+          <button class="btn sm danger" @click="purgeSeedLexicon" title="按来源精确清理已删除关键词的残留联想词">清理残留</button>
+          <button class="btn sm danger" @click="forcePurgeSeedLexicon" title="删除包含该关键词的所有联想词（忽略共享保护）">强制清理</button>
         </div>
         <p class="muted" style="margin-top:8px">词库 = 所有种子词历次抓取发现的联想词去重合集，记录首次/最近收录时间与出现次数。</p>
       </div>

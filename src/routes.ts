@@ -7,7 +7,7 @@ import { addCredits, countLiveCallsToday } from './credits.js';
 import { reattachOrphanHistory } from './queries.js';
 import { reloadScheduler, schedulerStatus } from './scheduler.js';
 import { config } from './config.js';
-import { csvEscape, nowIso, randomToken, sha256hex } from './util.js';
+import { csvEscape, normalizePhrase, nowIso, randomToken, sha256hex } from './util.js';
 
 export function registerApi(app: FastifyInstance): void {
   const db = getDb();
@@ -68,9 +68,13 @@ export function registerApi(app: FastifyInstance): void {
         const toDel = candidates.filter((p) => !others.has(p));
         for (let i = 0; i < toDel.length; i += 500) {
           const chunk = toDel.slice(i, i + 500);
+          const ph = chunk.map(() => '?').join(',');
           purgedLex += db
-            .prepare(`DELETE FROM lexicon WHERE mid = ? AND phrase_norm IN (${chunk.map(() => '?').join(',')})`)
+            .prepare(`DELETE FROM lexicon WHERE mid = ? AND phrase_norm IN (${ph})`)
             .run(kw.mid, ...chunk).changes;
+          // no stale provenance may survive for phrases that no longer exist
+          db.prepare(`DELETE FROM lexicon_sources WHERE mid = ? AND phrase_norm IN (${ph})`)
+            .run(kw.mid, ...chunk);
         }
       }
       // 2) provenance: forget this seed
@@ -255,7 +259,7 @@ export function registerApi(app: FastifyInstance): void {
   // clean up lexicon residue left by a seed that was already deleted (e.g. live-fetched
   // words written before provenance tracking existed). Shared phrases are kept.
   app.post('/api/lexicon/purge-seed', async (req, reply) => {
-    const b = (req.body ?? {}) as { text?: string; mid?: string };
+    const b = (req.body ?? {}) as { text?: string; mid?: string; force?: boolean };
     const text = (b.text ?? '').trim();
     const mid = b.mid || 'ATVPDKIKX0DER';
     if (!text) return reply.code(400).send({ error: '关键词不能为空' });
@@ -265,8 +269,34 @@ export function registerApi(app: FastifyInstance): void {
     if (kw) {
       return reply.code(409).send({ error: '该关键词仍存在，请在关键词管理中使用「删除并彻底清除」' });
     }
-    const purged = purgeSeed({ id: null, text, mid }, false);
-    return { ok: true, purged_lexicon: purged };
+    if (!b.force) {
+      const purged = purgeSeed({ id: null, text, mid }, false);
+      return { ok: true, purged_lexicon: purged };
+    }
+    // force mode: delete every phrase containing the seed text in this site, ignoring
+    // shared-word protection. Used when legacy provenance cannot be repaired.
+    const seedNorm = normalizePhrase(text);
+    const tx = db.transaction(() => {
+      const phrases = (
+        db.prepare('SELECT phrase_norm FROM lexicon WHERE mid = ? AND instr(phrase_norm, ?) > 0')
+          .all(mid, seedNorm) as Array<{ phrase_norm: string }>
+      ).map((r) => r.phrase_norm);
+      let purgedLex = 0;
+      for (let i = 0; i < phrases.length; i += 500) {
+        const chunk = phrases.slice(i, i + 500);
+        const ph = chunk.map(() => '?').join(',');
+        purgedLex += db
+          .prepare(`DELETE FROM lexicon WHERE mid = ? AND phrase_norm IN (${ph})`)
+          .run(mid, ...chunk).changes;
+        db.prepare(`DELETE FROM lexicon_sources WHERE mid = ? AND phrase_norm IN (${ph})`)
+          .run(mid, ...chunk);
+      }
+      // also forget this seed itself plus legacy "<seed> <letter>" expansion rows
+      db.prepare("DELETE FROM lexicon_sources WHERE mid = ? AND (seed_text = ? OR seed_text LIKE ?)")
+        .run(mid, text, `${text} %`);
+      return purgedLex;
+    });
+    return { ok: true, purged_lexicon: tx(), forced: true };
   });
 
   // ------------------------------------------------------- keyword snapshot

@@ -33,7 +33,7 @@ const App = {
       // trends
       trendKid: null, trendRuns: 12, trendData: null, trendLoading: false,
       // lexicon
-      lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1,
+      lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1, lexSort: 'cnt', lexDir: 'desc',
       // keys
       keyList: [], keyForm: { name: '', credits: 100 }, newKey: null, ledger: null, ledgerName: '',
       // settings
@@ -205,11 +205,25 @@ const App = {
     // ------------------------------------------------------------- lexicon
     async loadLexicon() {
       try {
-        const p = new URLSearchParams({ query: this.lexQuery, limit: '50', offset: String(this.lexPage * 50) });
+        const p = new URLSearchParams({ query: this.lexQuery, limit: '50', offset: String(this.lexPage * 50), sort: this.lexSort, dir: this.lexDir });
         if (this.lexMid) p.set('mid', this.lexMid);
         this.lexData = await api('GET', '/api/lexicon?' + p);
         this.lexJump = this.lexPage + 1;
       } catch (e) { this.handleErr(e); }
+    },
+    sortLex(col) {
+      if (this.lexSort === col) {
+        this.lexDir = this.lexDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.lexSort = col;
+        this.lexDir = (col === 'cnt' || col === 'first' || col === 'last') ? 'desc' : 'asc';
+      }
+      this.lexPage = 0;
+      this.loadLexicon();
+    },
+    lexArrow(col) {
+      if (this.lexSort !== col) return '';
+      return this.lexDir === 'asc' ? '▲' : '▼';
     },
     jumpLex() {
       const p = Math.min(Math.max(1, Math.round(Number(this.lexJump) || 1)), this.lexTotalPages);
@@ -485,7 +499,13 @@ const App = {
       <div class="card" v-if="lexData">
         <p class="muted" style="margin-bottom:10px">共 {{lexData.total}} 条</p>
         <table v-if="lexData.items.length">
-          <thead><tr><th>联想词</th><th>站点</th><th class="num">出现次数</th><th>首次收录</th><th>最近收录</th></tr></thead>
+          <thead><tr>
+            <th class="sortable" @click="sortLex('phrase')">联想词 {{lexArrow('phrase')}}</th>
+            <th class="sortable" @click="sortLex('site')">站点 {{lexArrow('site')}}</th>
+            <th class="sortable num" @click="sortLex('cnt')">出现次数 {{lexArrow('cnt')}}</th>
+            <th class="sortable" @click="sortLex('first')">首次收录 {{lexArrow('first')}}</th>
+            <th class="sortable" @click="sortLex('last')">最近收录 {{lexArrow('last')}}</th>
+          </tr></thead>
           <tbody>
             <tr v-for="it in lexData.items" :key="it.id">
               <td style="font-weight:600">{{it.phrase}}</td>

@@ -189,10 +189,10 @@ export function registerApi(app: FastifyInstance): void {
 
   // ----------------------------------------------------------------- lexicon
   app.get('/api/lexicon', async (req) => {
-    const q = req.query as { query?: string; mid?: string; limit?: string; offset?: string };
+    const q = req.query as { query?: string; mid?: string; limit?: string; offset?: string; sort?: string; dir?: string };
     const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
     const offset = Math.max(0, Number(q.offset) || 0);
-    const { total, items } = searchLexicon(q.query ?? '', q.mid || undefined, limit, offset);
+    const { total, items } = searchLexicon(q.query ?? '', q.mid || undefined, limit, offset, q.sort || 'cnt', q.dir || 'desc');
     return { total, limit, offset, items };
   });
 

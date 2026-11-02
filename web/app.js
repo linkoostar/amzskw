@@ -28,6 +28,7 @@ const App = {
       kwForm: { text: '', mid: 'ATVPDKIKX0DER', alias: 'aps', note: '' },
       kwSelected: [],
       snapshot: null, snapLoading: false,
+      pwForm: { old: '', new1: '', new2: '' },
       // runs
       runList: [], runDetail: null, runPoll: null,
       // trends
@@ -149,6 +150,16 @@ const App = {
     async toggleKw(kw) {
       await api('PATCH', '/api/keywords/' + kw.id, { status: kw.status === 'active' ? 'paused' : 'active' });
       this.loadKeywords();
+    },
+    async changePassword() {
+      const f = this.pwForm;
+      if (!f.old || !f.new1) return this.notify('请填写旧密码和新密码');
+      if (f.new1 !== f.new2) return this.notify('两次输入的新密码不一致');
+      try {
+        await api('POST', '/api/auth/change-password', { old_password: f.old, new_password: f.new1 });
+        this.pwForm = { old: '', new1: '', new2: '' };
+        this.notify('密码已修改，下次登录使用新密码');
+      } catch (e) { this.handleErr(e); }
     },
     async delKw(kw) {
       if (!confirm(`删除关键词「${kw.text}」？\n\n· 默认保留词库与抓取历史，重新添加同名关键词（同站点）时自动接回；\n· 只想停每周抓取请用「暂停」。`)) return;
@@ -412,9 +423,8 @@ const App = {
 
     <!-- ==================== KEYWORDS ==================== -->
     <template v-else-if="route==='keywords'">
-      <div class="grid cols2">
-        <div class="card">
-          <h3>添加关键词</h3>
+      <div class="card">
+        <h3>添加关键词</h3>
           <div class="row" style="margin-bottom:10px">
             <textarea v-model="kwForm.text" style="flex:1;min-height:72px" placeholder="一个关键词直接添加；多个关键词请按行填写（Ctrl+Enter 提交），如：&#10;starlink mini&#10;portable power station" @keydown.ctrl.enter.prevent="addKeyword"></textarea>
           </div>
@@ -423,7 +433,6 @@ const App = {
             <input v-model="kwForm.note" placeholder="备注（可选，仅单个添加时生效）" style="flex:1">
             <button class="btn primary" @click="addKeyword">添加</button>
           </div>
-        </div>
       </div>
       <div class="card">
         <div class="filters">
@@ -441,7 +450,7 @@ const App = {
           <button class="btn sm" @click="kwSelected=[]">取消选择</button>
         </div>
         <table v-if="kwList.length">
-          <thead><tr><th style="width:34px"><input type="checkbox" :checked="kwSelected.length>0 && kwSelected.length===kwList.length" @change="toggleAllKw"></th><th>关键词</th><th>站点</th><th>状态</th><th class="num" title="词库中该关键词前缀下的联想词数量（含 live 与周抓入库）">词库联想数</th><th>最近抓取</th><th>备注</th><th style="width:230px"></th></tr></thead>
+          <thead><tr><th style="width:34px"><input type="checkbox" :checked="kwSelected.length>0 && kwSelected.length===kwList.length" @change="toggleAllKw"></th><th>关键词</th><th>站点</th><th>状态</th><th class="num" title="词库中该关键词前缀下的联想词数量（含 live 与周抓入库）">词库联想数</th><th>最近抓取</th><th>备注</th><th style="width:370px"></th></tr></thead>
           <tbody>
             <tr v-for="kw in kwList" :key="kw.id">
               <td><input type="checkbox" :value="kw.id" v-model="kwSelected"></td>
@@ -697,6 +706,16 @@ const App = {
           </tbody>
         </table>
         <button class="btn primary" style="margin-top:14px" @click="saveSettings">保存全部设置</button>
+      </div>
+      <div class="card">
+        <h3>修改管理员密码</h3>
+        <p class="muted" style="margin-top:0">保存后以数据库密码为准（重启/升级不变，环境变量失效）。至少 8 位。</p>
+        <div class="row">
+          <input v-model="pwForm.old" type="password" placeholder="旧密码" style="width:220px">
+          <input v-model="pwForm.new1" type="password" placeholder="新密码（至少 8 位）" style="width:220px">
+          <input v-model="pwForm.new2" type="password" placeholder="确认新密码" style="width:220px">
+          <button class="btn primary" @click="changePassword">修改密码</button>
+        </div>
       </div>
     </template>
 

@@ -1,7 +1,8 @@
-import { getDb, getSettingNum } from './db.js';
+import { getDb, getSettingNum, getSetting, setSetting } from './db.js';
 import { getApiKeyByHash, touchLastUsed, checkRateLimit, ApiKeyRow } from './credits.js';
 import { config } from './config.js';
 import { nowIso, randomToken, sha256hex } from './util.js';
+import { scryptSync, randomBytes, timingSafeEqual } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // admin web session auth (cookie)
@@ -30,8 +31,32 @@ export function destroyAdminSession(token: string | undefined): void {
   if (token) getDb().prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
+const ADMIN_PASSWORD_HASH_KEY = 'admin_password_hash';
+
+/** password check: DB-stored scrypt hash (set via change-password) takes precedence over env */
 export function checkAdminPassword(password: string): boolean {
+  const stored = getSetting(ADMIN_PASSWORD_HASH_KEY);
+  if (stored) {
+    const [salt, hex] = stored.split(':');
+    if (salt && hex) {
+      try {
+        return timingSafeEqual(scryptSync(password, salt, 32), Buffer.from(hex, 'hex'));
+      } catch {
+        return false;
+      }
+    }
+  }
   return password === config.adminPassword;
+}
+
+/** store a new admin password as salted scrypt hash in settings (survives restarts, overrides env) */
+export function changeAdminPassword(oldPassword: string, newPassword: string): { ok: boolean; error?: string } {
+  if (!checkAdminPassword(oldPassword)) return { ok: false, error: '旧密码错误' };
+  if (typeof newPassword !== 'string' || newPassword.length < 8) return { ok: false, error: '新密码至少 8 位' };
+  const salt = randomBytes(16).toString('hex');
+  const hex = scryptSync(newPassword, salt, 32).toString('hex');
+  setSetting(ADMIN_PASSWORD_HASH_KEY, `${salt}:${hex}`);
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { getDb, getAllSettings, setSetting, getSetting } from './db.js';
-import { checkAdminPassword, createAdminSession, destroyAdminSession, SESSION_COOKIE, validateAdminSession } from './auth.js';
+import { checkAdminPassword, createAdminSession, destroyAdminSession, SESSION_COOKIE, validateAdminSession, changeAdminPassword } from './auth.js';
 import { startRun, cancelRun, breakerState, liveFetch } from './crawler.js';
 import { getStats, getKeywordSnapshot, getTrendMatrix, searchLexicon } from './queries.js';
 import { addCredits, countLiveCallsToday } from './credits.js';
@@ -36,6 +36,12 @@ export function registerApi(app: FastifyInstance): void {
     return { ok: true };
   });
   app.get('/api/auth/me', async (req) => ({ authed: validateAdminSession(req.cookies?.[SESSION_COOKIE]) }));
+  app.post('/api/auth/change-password', async (req, reply) => {
+    const { old_password, new_password } = (req.body ?? {}) as { old_password?: string; new_password?: string };
+    const r = changeAdminPassword(old_password ?? '', new_password ?? '');
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    return { ok: true };
+  });
 
   // ------------------------------------------------------------------- stats
   app.get('/api/stats', async () => ({ ...getStats(), breaker: breakerState(), scheduler: schedulerStatus() }));

@@ -189,7 +189,7 @@ function billable(key: ApiKeyRow, clientId: string, tool: string, handler: (args
     logApiCall(key.id, tool, clientId);
     try {
       const data = await handler(args);
-      return jsonResult(data, price > 0 ? { credits_charged: price, credits_balance: balance } : {});
+      return jsonResult(data, { credits_charged: price, credits_balance: balance });
     } catch (e) {
       if (e instanceof McpToolError) return errorResult(e.message);
       return errorResult((e as Error).message ?? String(e));

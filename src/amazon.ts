@@ -1,6 +1,6 @@
 import { ProxyAgent, request as undiciRequest } from 'undici';
 import { CrawlerError, genSessionId, pick } from './util.js';
-import { getDb } from './db.js';
+import { getDb, getSetting } from './db.js';
 
 /** Rotation pool of modern browser UAs */
 const USER_AGENTS = [
@@ -60,9 +60,11 @@ export async function fetchSuggestionsOnce(opts: FetchSuggestOptions): Promise<F
   const limit = opts.limit ?? 15;
   const sessionId = opts.sessionId ?? genSessionId();
 
+  // fetch source comes from DB settings (admin UI), never hardcoded here
+  const base = (getSetting('suggest_api_url') || 'https://completion.amazon.com/api/2017/suggestions').trim();
   const url =
-    `https://completion.amazon.com/api/2017/suggestions` +
-    `?limit=${encodeURIComponent(String(limit))}` +
+    base + (base.includes('?') ? '&' : '?') +
+    `limit=${encodeURIComponent(String(limit))}` +
     `&prefix=${encodeURIComponent(opts.prefix)}` +
     `&alias=${encodeURIComponent(alias)}` +
     `&fresh=true` +

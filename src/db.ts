@@ -47,6 +47,8 @@ function runMigrations(db: DB): void {
 }
 
 const DEFAULT_SETTINGS: Record<string, string> = {
+  // fetch source endpoint (editable in admin UI; stored in DB)
+  suggest_api_url: 'https://completion.amazon.com/api/2017/suggestions',
   // scheduler
   cron: '0 3 * * 1', // every Monday 03:00 server time
   start_jitter_max_ms: '2700000', // up to 45 min random start delay for weekly runs

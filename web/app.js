@@ -519,6 +519,11 @@ const App = {
         <h3>运行参数</h3>
         <div v-if="settingsMsg" class="okmsg">{{settingsMsg}}</div>
         <div class="settings-grid" v-if="settingsForm.cron!==undefined">
+          <template v-if="settingsForm.suggest_api_url!==undefined">
+            <div class="group-title">抓取源（联想词接口地址，存在数据库，可随时更换；不带 ? 参数，兼容带参数的完整地址）</div>
+            <label>接口地址<input v-model="settingsForm.suggest_api_url" class="mono"></label>
+          </template>
+
           <div class="group-title">周调度</div>
           <label>cron 表达式（周几几点抓取）<input v-model="settingsForm.cron"></label>
           <label>随机启动延迟上限（毫秒，打散启动时间）<input v-model="settingsForm.start_jitter_max_ms" type="number"></label>

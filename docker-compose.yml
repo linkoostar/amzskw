@@ -1,14 +1,25 @@
 services:
   amz-lexicon:
-    build: .
+    image: ghcr.io/linkoostar/amzskw:latest
+    pull_policy: always          # 每次启动/重建都检查并拉取最新镜像，变了就自动重建容器
     container_name: amz-lexicon
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8080:8080"              # NAS 上 8080 被占就改左边，如 "8090:8080"
     environment:
-      - ADMIN_PASSWORD=admin123          # 改掉！
+      - ADMIN_PASSWORD=admin123  # 改掉！
       - DB_PATH=/data/amz.db
       - TZ=Asia/Shanghai
-      # - HTTPS_PROXY=http://host.docker.internal:7890   # 国内网络访问亚马逊需代理时取消注释
+      # 访问亚马逊需代理时取消注释（IP 换成你的代理机）
+      # - HTTPS_PROXY=http://192.168.1.2:7890
     volumes:
-      - ./data:/data
+      - /volume1/docker/amz-lexicon/data:/data   # 群晖路径；其他机器改 ./data:/data
+
+  # 可选：每天自动检查并更新镜像（不想用就删掉这段）
+  # watchtower:
+  #   image: containrrr/watchtower
+  #   container_name: amz-lexicon-watchtower
+  #   restart: unless-stopped
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   command: --interval 86400 --cleanup amz-lexicon

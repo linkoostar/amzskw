@@ -56,7 +56,8 @@ export function registerApi(app: FastifyInstance): void {
     return db
       .prepare(
         `SELECT k.*, s.name AS site_name, s.flag AS site_flag,
-           (SELECT COUNT(*) FROM suggestions_raw sr WHERE sr.keyword_id = k.id) AS suggestion_count,
+           (SELECT COUNT(*) FROM lexicon l
+             WHERE l.phrase_norm = LOWER(k.text) OR l.phrase_norm LIKE LOWER(k.text) || ' %') AS suggestion_count,
            (SELECT MAX(ri.finished_at) FROM run_items ri WHERE ri.keyword_id = k.id AND ri.status='done') AS last_fetched
          FROM keywords k LEFT JOIN sites s ON s.mid = k.mid ${w}
          ORDER BY k.created_at DESC, k.id DESC`,
@@ -120,9 +121,56 @@ export function registerApi(app: FastifyInstance): void {
   });
 
   app.delete('/api/keywords/:id', async (req) => {
-    const { id } = req.params as { id: string };
+    const { id: idRaw } = req.params as { id: string };
+    const id = Number(idRaw);
+    const purge = (req.query as { purge?: string }).purge === '1';
+    const kw = db.prepare('SELECT id, text, mid FROM keywords WHERE id = ?').get(id) as
+      | { id: number; text: string; mid: string }
+      | undefined;
+    if (!kw) return { ok: true, purged: 0 };
+
+    if (purge) {
+      const tx = db.transaction(() => {
+        // 1) lexicon: remove suggestions discovered under this seed, unless also
+        //    referenced by another keyword's history (shared words survive)
+        const mine = (
+          db.prepare('SELECT DISTINCT phrase_norm FROM suggestions_raw WHERE keyword_id = ?').all(id) as
+            Array<{ phrase_norm: string }>
+        ).map((r) => r.phrase_norm);
+        let purgedLex = 0;
+        if (mine.length > 0) {
+          const others = new Set(
+            (
+              db
+                .prepare(
+                  `SELECT DISTINCT phrase_norm FROM suggestions_raw
+                   WHERE keyword_id != ? AND phrase_norm IN (${mine.map(() => '?').join(',')})`,
+                )
+                .all(id, ...mine) as Array<{ phrase_norm: string }>
+            ).map((r) => r.phrase_norm),
+          );
+          const toDel = mine.filter((p) => !others.has(p));
+          for (let i = 0; i < toDel.length; i += 500) {
+            const chunk = toDel.slice(i, i + 500);
+            purgedLex += db
+              .prepare(`DELETE FROM lexicon WHERE phrase_norm IN (${chunk.map(() => '?').join(',')})`)
+              .run(...chunk).changes;
+          }
+        }
+        // 2) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
+        db.prepare('DELETE FROM suggestions_raw WHERE keyword_id = ?').run(id);
+        db.prepare(
+          'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
+        ).run(id, kw.text, kw.mid);
+        db.prepare('DELETE FROM keywords WHERE id = ?').run(id);
+        return purgedLex;
+      });
+      const purgedLex = tx();
+      return { ok: true, purged: 1, purged_lexicon: purgedLex };
+    }
+
     db.prepare('DELETE FROM keywords WHERE id = ?').run(id);
-    return { ok: true };
+    return { ok: true, purged: 0 };
   });
 
   app.post('/api/keywords/batch', async (req, reply) => {

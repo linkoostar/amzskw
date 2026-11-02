@@ -151,9 +151,10 @@ const App = {
       this.loadKeywords();
     },
     async delKw(kw) {
-      if (!confirm(`删除关键词「${kw.text}」？\n\n· 词库与抓取历史会保留；\n· 重新添加同名关键词（同站点）时历史自动接回；\n· 只想停每周抓取请用「暂停」。`)) return;
-      await api('DELETE', '/api/keywords/' + kw.id);
-      this.notify('已删除（历史已保留，重加自动接回）');
+      if (!confirm(`删除关键词「${kw.text}」？\n\n· 默认保留词库与抓取历史，重新添加同名关键词（同站点）时自动接回；\n· 只想停每周抓取请用「暂停」。`)) return;
+      const purge = confirm(`是否同时彻底清除「${kw.text}」的联想词库与全部抓取历史？\n\n【确定】= 彻底清除（该词的词库联想词 + 历史，不可恢复）\n【取消】= 仅删除关键词（保留词库与历史）`);
+      await api('DELETE', '/api/keywords/' + kw.id + (purge ? '?purge=1' : ''));
+      this.notify(purge ? '已删除并彻底清除词库与历史' : '已删除（历史已保留，重加自动接回）');
       this.loadKeywords();
     },
     async fetchKw(kw) {
@@ -440,7 +441,7 @@ const App = {
           <button class="btn sm" @click="kwSelected=[]">取消选择</button>
         </div>
         <table v-if="kwList.length">
-          <thead><tr><th style="width:34px"><input type="checkbox" :checked="kwSelected.length>0 && kwSelected.length===kwList.length" @change="toggleAllKw"></th><th>关键词</th><th>站点</th><th>状态</th><th class="num">联想词总数</th><th>最近抓取</th><th>备注</th><th style="width:230px"></th></tr></thead>
+          <thead><tr><th style="width:34px"><input type="checkbox" :checked="kwSelected.length>0 && kwSelected.length===kwList.length" @change="toggleAllKw"></th><th>关键词</th><th>站点</th><th>状态</th><th class="num" title="词库中该关键词前缀下的联想词数量（含 live 与周抓入库）">词库联想数</th><th>最近抓取</th><th>备注</th><th style="width:230px"></th></tr></thead>
           <tbody>
             <tr v-for="kw in kwList" :key="kw.id">
               <td><input type="checkbox" :value="kw.id" v-model="kwSelected"></td>

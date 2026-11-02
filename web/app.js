@@ -20,7 +20,7 @@ const App = {
     return {
       authed: false, ready: false, loginPassword: '', loginErr: '',
       route: 'dashboard',
-      toast: '',
+      toast: '', errToast: '',
       stats: null,
       sites: [],
       // keywords
@@ -92,7 +92,7 @@ const App = {
       if (r === 'settings') this.loadSettings();
       if (r === 'dashboard') this.loadSites();
     },
-    notify(msg) { this.toast = msg; setTimeout(() => { if (this.toast === msg) this.toast = ''; }, 4000); },
+    notify(msg) { this.errToast = ''; this.toast = msg; setTimeout(() => { if (this.toast === msg) this.toast = ''; }, 4000); },
 
     async login() {
       this.loginErr = '';
@@ -226,9 +226,11 @@ const App = {
       else this.loadRuns();
     },
     async cancelRun(run) {
-      await api('POST', `/api/runs/${run.id}/cancel`);
-      this.notify(`任务 #${run.id} 已请求取消`);
-      this.loadRuns();
+      try {
+        await api('POST', `/api/runs/${run.id}/cancel`);
+        this.notify(`任务 #${run.id} 已请求取消`);
+        this.loadRuns();
+      } catch (e) { this.handleErr(e); }
     },
     async delRun(run) {
       if (!confirm(`删除任务 #${run.id}（${run.trigger_type === 'weekly' ? '周调度' : '手动'}，${run.status}）？\n\n将删除该批次的任务明细与原始响应快照；已积累的词库数据不受影响。此操作不可恢复。`)) return;
@@ -357,29 +359,38 @@ const App = {
     },
     async revokeKey(k) {
       if (!confirm(`吊销 ${k.name}？使用该 key 的 agent 将立即失效。`)) return;
-      await api('POST', `/api/keys/${k.id}/revoke`);
-      this.loadKeys();
+      try {
+        await api('POST', `/api/keys/${k.id}/revoke`);
+        this.notify('已吊销');
+        this.loadKeys();
+      } catch (e) { this.handleErr(e); }
     },
     async delKey(k) {
       if (!confirm(`删除「${k.name}」？\n\n· 该 key 将立即失效并从列表移除；\n· credits 流水与调用审计记录会保留，便于追溯。`)) return;
-      await api('DELETE', '/api/keys/' + k.id);
-      this.notify('已删除（审计与流水已保留）');
-      this.loadKeys();
+      try {
+        await api('DELETE', '/api/keys/' + k.id);
+        this.notify('已删除（审计与流水已保留）');
+        this.loadKeys();
+      } catch (e) { this.handleErr(e); }
     },
     async toggleLive(k) {
       const next = k.can_live ? 0 : 1;
-      await api('PUT', '/api/keys/' + k.id, { can_live: next });
-      k.can_live = next;
-      this.notify(next ? '已允许实时抓取' : '已禁止实时抓取');
+      try {
+        await api('PUT', '/api/keys/' + k.id, { can_live: next });
+        k.can_live = next;
+        this.notify(next ? '已允许实时抓取' : '已禁止实时抓取');
+      } catch (e) { this.handleErr(e); }
     },
     async setLiveLimit(k) {
       if (!k.can_live) { this.notify('请先允许实时抓取'); return; }
       const v = prompt(`「${k.name}」每日实时抓取限额（今日已用 ${k.live_today ?? 0} 次）:`, String(k.live_daily_limit));
       if (v === null) return;
       const n = Math.max(0, Math.round(Number(v) || 0));
-      await api('PUT', '/api/keys/' + k.id, { live_daily_limit: n });
-      k.live_daily_limit = n;
-      this.notify('限额已更新');
+      try {
+        await api('PUT', '/api/keys/' + k.id, { live_daily_limit: n });
+        k.live_daily_limit = n;
+        this.notify('限额已更新');
+      } catch (e) { this.handleErr(e); }
     },
     async showCalls(k) {
       try {
@@ -392,12 +403,17 @@ const App = {
       if (v === null) return;
       const amount = Math.round(Number(v));
       if (!Number.isFinite(amount) || amount === 0) return;
-      await api('POST', `/api/keys/${k.id}/topup`, { amount, note: current });
-      this.loadKeys();
+      try {
+        await api('POST', `/api/keys/${k.id}/topup`, { amount, note: current });
+        this.notify('Credits 已更新');
+        this.loadKeys();
+      } catch (e) { this.handleErr(e); }
     },
     async showLedger(k) {
-      const rows = await api('GET', `/api/keys/${k.id}/ledger`);
-      this.modal = { title: `Credits 流水 — ${k.name}`, rows, type: 'ledger' };
+      try {
+        const rows = await api('GET', `/api/keys/${k.id}/ledger`);
+        this.modal = { title: `Credits 流水 — ${k.name}`, rows, type: 'ledger' };
+      } catch (e) { this.handleErr(e); }
     },
 
     // ------------------------------------------------------------ settings
@@ -411,15 +427,20 @@ const App = {
     async saveSettings() {
       const pricing = {};
       this.pricingRows.forEach(p => pricing[p.tool] = p.price);
-      await api('PUT', '/api/settings', { settings: this.settingsForm, pricing });
-      this.settingsMsg = '已保存，调度已按新 cron 重新加载';
-      setTimeout(() => this.settingsMsg = '', 3500);
-      this.loadSettings();
+      try {
+        await api('PUT', '/api/settings', { settings: this.settingsForm, pricing });
+        this.settingsMsg = '已保存，调度已按新 cron 重新加载';
+        setTimeout(() => this.settingsMsg = '', 3500);
+        this.loadSettings();
+      } catch (e) { this.handleErr(e); }
     },
 
     handleErr(e) {
       if (e.code === 401) { this.authed = false; return; }
-      alert(e.message || e);
+      const msg = e.message || String(e);
+      this.toast = '';
+      this.errToast = msg;
+      setTimeout(() => { if (this.errToast === msg) this.errToast = ''; }, 5000);
     },
     closeModal() { this.modal = null; },
     async copyText(t) { try { await navigator.clipboard.writeText(t); this.notify('已复制'); } catch {} },
@@ -447,15 +468,18 @@ const App = {
       <a :class="{on:route==='keys'}" href="#keys">🎫 API Keys / 计费</a>
       <a :class="{on:route==='settings'}" href="#settings">⚙️ 系统设置</a>
     </nav>
-    <div style="padding:14px 18px;font-size:11px;color:#5d6b81">
+    <div class="mcp-hint" style="padding:14px 18px;font-size:11px;color:#5d6b81">
       MCP: <span class="mono" style="color:#8ea2bd">POST /mcp</span>
     </div>
   </aside>
   <main class="main">
     <div class="topbar">
       <h1>{{ {dashboard:'仪表盘',keywords:'关键词管理',runs:'抓取任务',trends:'排名趋势',lexicon:'词库检索',keys:'API Keys / Credits 计费',settings:'系统设置'}[route] }}</h1>
-      <div class="userbox" v-if="toast"><span class="okmsg" style="margin:0">{{toast}}</span></div>
-      <div class="userbox"><button class="btn sm" @click="logout">退出</button></div>
+      <div class="userbox">
+        <span v-if="toast" class="okmsg">{{toast}}</span>
+        <span v-else-if="errToast" class="err">{{errToast}}</span>
+        <button class="btn sm" @click="logout">退出</button>
+      </div>
     </div>
 
     <!-- ==================== DASHBOARD ==================== -->
@@ -509,7 +533,7 @@ const App = {
           <select v-model="kwFilters.status" @change="loadKeywords"><option value="">全部状态</option><option value="active">活跃</option><option value="paused">暂停</option></select>
           <select v-model="kwFilters.source" @change="loadKeywords"><option value="">全部来源</option><option value="manual">手动添加</option><option value="mcp-live">Agent 自动</option></select>
           <input v-model="kwFilters.search" placeholder="搜索关键词" @keyup.enter="loadKeywords">
-          <button class="btn sm" @click="loadKeywords">筛选</button>
+          <button class="btn" @click="loadKeywords">筛选</button>
         </div>
         <div class="row" v-if="kwSelected.length" style="margin-bottom:10px;background:#f1f5f9;padding:8px 12px;border-radius:8px">
           <b>已选 {{kwSelected.length}} 项：</b>
@@ -600,7 +624,7 @@ const App = {
           <select v-model.number="trendRuns" @change="loadTrend">
             <option :value="6">最近 6 次快照</option><option :value="12">最近 12 次</option><option :value="26">最近 26 次</option><option :value="52">最近 52 次</option>
           </select>
-          <a v-if="trendData && trendData.runs.length" class="btn sm" :href="'/api/trends/export?keyword_id='+trendKid">导出 CSV</a>
+          <a v-if="trendData && trendData.runs.length" class="btn" :href="'/api/trends/export?keyword_id='+trendKid">导出 CSV</a>
           <span v-if="trendLoading" class="muted">加载中…</span>
         </div>
         <p class="muted" style="margin-top:8px">每次周调度都是一次快照。基础联想的返回顺序 = 搜索框真实排名，跨快照对比即可看到升降变化。</p>
@@ -637,8 +661,8 @@ const App = {
           <input v-model="lexQuery" placeholder="搜索词库，如 starlink" style="flex:1" @keyup.enter="lexPage=0;loadLexicon()">
           <select v-model="lexMid"><option value="">全部站点</option><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
           <button class="btn primary" @click="lexPage=0;loadLexicon()">搜索</button>
-          <button class="btn sm danger" @click="purgeSeedLexicon" title="按来源精确清理已删除关键词的残留联想词">清理残留</button>
-          <button class="btn sm danger" @click="forcePurgeSeedLexicon" title="删除包含该关键词的所有联想词（忽略共享保护）">强制清理</button>
+          <button class="btn danger" @click="purgeSeedLexicon" title="按来源精确清理已删除关键词的残留联想词">清理残留</button>
+          <button class="btn danger" @click="forcePurgeSeedLexicon" title="删除包含该关键词的所有联想词（忽略共享保护）">强制清理</button>
         </div>
         <p class="muted" style="margin-top:8px">词库 = 所有种子词历次抓取发现的联想词去重合集，记录首次/最近收录时间与出现次数。</p>
       </div>
@@ -663,7 +687,7 @@ const App = {
           </tbody>
         </table>
         <div v-else class="empty">无匹配结果</div>
-        <div class="row" style="margin-top:12px;justify-content:center" v-if="lexData.total>50">
+        <div class="row pager" style="margin-top:12px;justify-content:center" v-if="lexData.total>50">
           <button class="btn sm" :disabled="lexPage===0" @click="lexPage--;loadLexicon()">上一页</button>
           <span class="muted">第 {{lexPage+1}} / {{lexTotalPages}} 页</span>
           <button class="btn sm" :disabled="lexPage+1>=lexTotalPages" @click="lexPage++;loadLexicon()">下一页</button>

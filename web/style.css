@@ -18,9 +18,10 @@ body{font:14px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",san
 .main{flex:1;padding:24px 28px;min-width:0}
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--primary)}
-.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:20px}
 .topbar h1{font-size:19px}
-.userbox{display:flex;gap:10px;align-items:center}
+.userbox{display:flex;gap:10px;align-items:center;min-width:0}
+.topbar .okmsg,.topbar .err{display:inline-block;vertical-align:middle;margin:0;max-width:min(60vw,560px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;margin-bottom:18px}
 .card h3{font-size:14.5px;margin-bottom:12px;color:#334155}
@@ -41,26 +42,30 @@ td{padding:8px 10px;border-bottom:1px solid #eef1f5;vertical-align:middle}
 tr:hover td{background:#fafbfd}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 
-.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:13px;cursor:pointer;transition:.12s;text-decoration:none}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:38px;padding:0 15px;border-radius:8px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:13.5px;font-weight:500;white-space:nowrap;cursor:pointer;transition:.12s;text-decoration:none}
 .btn:hover{border-color:#c9d3e0;background:#f8fafc}
 .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
 .btn.primary:hover{background:#1d4fd7}
 .btn.danger{color:var(--red);border-color:#f3c1c1}
 .btn.danger:hover{background:#fdf2f2}
-.btn.sm{padding:4px 9px;font-size:12px;border-radius:6px}
+.btn.sm{height:30px;padding:0 10px;font-size:12.5px;border-radius:7px}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+.btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 
-input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--border);border-radius:8px;outline:none;background:#fff;color:var(--text);transition:.12s}
+input:not([type=checkbox]):not([type=radio]),select{font:inherit;height:38px;padding:0 10px;border:1px solid var(--border);border-radius:8px;outline:none;background:#fff;color:var(--text);transition:.12s}
+textarea{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:8px;outline:none;background:#fff;color:var(--text);transition:.12s}
 input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(37,99,235,.12)}
-textarea{width:100%;resize:vertical;min-height:110px;font-family:ui-monospace,monospace;font-size:12.5px}
+input[type=checkbox],input[type=radio]{width:15px;height:15px;padding:0;accent-color:var(--primary);cursor:pointer;vertical-align:middle}
+textarea{resize:vertical;min-height:110px;font-family:ui-monospace,monospace;font-size:12.5px}
 
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.filters input,.filters select{padding:6px 10px;font-size:13px}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.filters input:not([type=checkbox]):not([type=radio]),.filters select{height:34px;padding:0 10px;font-size:13px}
+.filters .btn{height:34px;padding:0 12px;font-size:13px}
 
 /* 可搜索下拉（combobox） */
 .combo{position:relative;flex:0 1 auto}
-.combo input{width:100%;padding:6px 10px;font-size:13px}
+.combo input{width:100%;height:38px;padding:0 10px;font-size:13px}
 .combo-list{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:320px;overflow-y:auto;z-index:50;
   background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 12px 28px rgba(15,23,42,.16);padding:4px}
 .combo-item{padding:7px 10px;font-size:13px;border-radius:7px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -110,3 +115,28 @@ textarea{width:100%;resize:vertical;min-height:110px;font-family:ui-monospace,mo
 .pill-run{display:inline-flex;align-items:center;gap:5px}
 .pill-run i{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
 .pill-run.off i{background:var(--muted)}
+
+/* 分页条：按钮与页码输入框同高 */
+.pager .btn,.pager input{height:32px}
+
+@media(max-width:820px){
+  .layout{display:block}
+  .sidebar{width:100%;flex-direction:column}
+  .sidebar .logo{padding:14px 16px 10px}
+  .nav{display:flex;overflow-x:auto;gap:4px;padding:8px 10px;flex:initial}
+  .nav a{margin:0;padding:7px 11px;font-size:13px;white-space:nowrap}
+  .mcp-hint{display:none}
+  .main{padding:16px 14px}
+  .topbar{margin-bottom:14px}
+  .cols4,.cols3,.cols2{grid-template-columns:1fr 1fr}
+  .settings-grid{grid-template-columns:1fr}
+  .group-title{grid-column:1}
+  .modal-mask{padding:20px 10px}
+  .modal{padding:16px}
+  /* 窄屏下表格横向滚动，避免撑破页面 */
+  table{display:block;overflow-x:auto;white-space:nowrap}
+}
+@media(max-width:560px){
+  .cols4,.cols3,.cols2{grid-template-columns:1fr}
+  .topbar h1{font-size:17px}
+}

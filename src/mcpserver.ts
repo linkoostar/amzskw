@@ -3,10 +3,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { authorizeMcpRequest } from './auth.js';
-import { chargeCredits, getToolPrice, InsufficientCreditsError, ApiKeyRow } from './credits.js';
+import {
+  chargeCredits, getToolPrice, InsufficientCreditsError, ApiKeyRow,
+  logApiCall, countLiveCallsToday,
+} from './credits.js';
 import { liveFetch, randomRequestGap } from './crawler.js';
 import { getStats, searchLexicon, getTrendMatrix } from './queries.js';
 import { getDb, getSettingNum, getSetting } from './db.js';
+import { normalizePhrase, nowIso } from './util.js';
 import { config } from './config.js';
 
 function jsonResult(data: unknown, extra: Record<string, unknown> = {}) {
@@ -16,6 +20,53 @@ function jsonResult(data: unknown, extra: Record<string, unknown> = {}) {
 
 function errorResult(message: string) {
   return { content: [{ type: 'text' as const, text: JSON.stringify({ error: message }) }], isError: true as const };
+}
+
+class McpToolError extends Error {}
+
+/** Guard for LIVE Amazon tools: per-key switch, per-key daily quota, global daily cap. */
+function liveGuard(key: ApiKeyRow): void {
+  if (!key.can_live) {
+    throw new McpToolError('live fetching is disabled for this API key by the administrator (tool: search_*). Use lookup_lexicon / get_keyword_trends instead.');
+  }
+  const perKey = countLiveCallsToday(key.id);
+  if (perKey >= key.live_daily_limit) {
+    throw new McpToolError(`live-fetch daily limit reached for this API key (${perKey}/${key.live_daily_limit}). Resets at UTC midnight. Contact the administrator to raise the limit.`);
+  }
+  const global = countLiveCallsToday();
+  const globalCap = getSettingNum('mcp_live_global_daily') || 200;
+  if (global >= globalCap) {
+    throw new McpToolError(`server-wide live-fetch daily cap reached (${global}/${globalCap}). Resets at UTC midnight. Try lookup_lexicon (accumulated data) instead.`);
+  }
+}
+
+/** Merge live-fetched phrases into the persistent lexicon + archive the raw payload (if enabled). */
+function persistLivePhrases(mid: string, seedKeyword: string, phrases: string[], rawPayloads: unknown[]): number {
+  if (!getSettingNum('mcp_live_persist')) return 0;
+  const db = getDb();
+  const up = db.prepare(
+    `INSERT INTO lexicon(mid, phrase_norm, phrase, first_seen_at, last_seen_at, seen_count)
+     VALUES (?, ?, ?, ?, ?, 1)
+     ON CONFLICT(mid, phrase_norm) DO UPDATE SET seen_count = seen_count + 1, last_seen_at = excluded.last_seen_at`,
+  );
+  let stored = 0;
+  const tx = db.transaction(() => {
+    const seen = new Set<string>();
+    for (const p of phrases) {
+      const norm = normalizePhrase(p);
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      up.run(mid, norm, p.trim(), nowIso(), nowIso());
+      stored++;
+    }
+    for (const raw of rawPayloads) {
+      db.prepare(
+        "INSERT INTO fetch_log(url, ok, response_body) VALUES (?, 1, ?)",
+      ).run(`mcp://live/${mid}/${encodeURIComponent(seedKeyword)}`, JSON.stringify(raw));
+    }
+  });
+  tx();
+  return stored;
 }
 
 /** wrap a tool handler with credit charging */
@@ -33,10 +84,12 @@ function billable(key: ApiKeyRow, tool: string, handler: (args: any) => Promise<
       }
       throw e;
     }
+    logApiCall(key.id, tool);
     try {
       const data = await handler(args);
       return jsonResult(data, price > 0 ? { credits_charged: price, credits_balance: balance } : {});
     } catch (e) {
+      if (e instanceof McpToolError) return errorResult(e.message);
       return errorResult((e as Error).message ?? String(e));
     }
   };
@@ -119,7 +172,9 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     'search_suggestions',
     {
       description:
-        'LIVE fetch of Amazon search-box suggestions for a keyword (hits completion.amazon.com). Returns suggestions in rank order. Slower (~seconds) and charged per call.',
+        'LIVE fetch of Amazon search-box suggestions (hits Amazon endpoint directly). Returns suggestions in searchbox rank order. ' +
+        'GOVERNANCE: subject to per-key daily live quota and a server-wide daily cap set by the administrator; ' +
+        'when server persistence is enabled the phrases are also merged into the lexicon (they become visible via lookup_lexicon).',
       inputSchema: {
         keyword: z.string().describe('Search prefix, e.g. "wireless earbuds"'),
         mid: z.string().optional().describe('Marketplace id, defaults to US'),
@@ -128,16 +183,21 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
       },
     },
     billable(key, 'search_suggestions', async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
+      liveGuard(key);
+      const mid = args.mid ?? 'ATVPDKIKX0DER';
       const res = await liveFetch({
         prefix: args.keyword,
-        mid: args.mid ?? 'ATVPDKIKX0DER',
+        mid,
         alias: args.alias ?? 'aps',
         limit: Math.min(30, Math.max(1, args.limit ?? 15)),
       });
+      const values = res.suggestions.map((s) => s.value);
+      const stored = persistLivePhrases(mid, args.keyword, values, [res.body]);
       return {
         keyword: args.keyword,
-        mid: args.mid ?? 'ATVPDKIKX0DER',
+        mid,
         suggestions: res.suggestions.map((s, i) => ({ position: i + 1, value: s.value, strategyId: s.strategyId })),
+        persisted_to_lexicon: stored,
         fetched_at: new Date().toISOString(),
       };
     }),
@@ -147,7 +207,10 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     'search_suggestions_expand',
     {
       description:
-        'LIVE deep-mining: fetches basic suggestions, then re-queries base words + letters to expand the pool (like "alphabet soup"). Makes many paced requests; can take minutes. Charged at a higher rate.',
+        'LIVE deep-mining: fetches basic suggestions, then re-queries base words + letters to expand the pool ("alphabet soup"). ' +
+        'Makes many paced requests; can take minutes (keep letters/expand_top small). Charged at a higher rate. ' +
+        'GOVERNANCE: subject to per-key daily live quota and a server-wide daily cap; when persistence is enabled all discovered ' +
+        'phrases are merged into the lexicon (visible via lookup_lexicon) and raw responses are archived for audit.',
       inputSchema: {
         keyword: z.string().describe('Seed keyword'),
         mid: z.string().optional().describe('Marketplace id, defaults to US'),
@@ -161,10 +224,13 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
       key,
       'search_suggestions_expand',
       async (args: { keyword: string; mid?: string; alias?: string; limit?: number; expand_top?: number; letters?: string }) => {
+        liveGuard(key);
         const mid = args.mid ?? 'ATVPDKIKX0DER';
         const alias = args.alias ?? 'aps';
         const limit = Math.min(30, Math.max(1, args.limit ?? 15));
+        const rawBodies: string[] = [];
         const basic = await liveFetch({ prefix: args.keyword, mid, alias, limit });
+        rawBodies.push(basic.body);
         const baseWords = basic.suggestions.map((s) => s.value);
         const expandTop = Math.min(10, Math.max(0, args.expand_top ?? getSettingNum('expand_top')));
         const letters = (args.letters ?? (getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz')).split('');
@@ -175,6 +241,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
             await randomRequestGap();
             try {
               const res = await liveFetch({ prefix: `${baseWord} ${letter}`, mid, alias, limit });
+              rawBodies.push(res.body);
               res.suggestions.forEach((s, i) => {
                 const n = s.value.toLowerCase();
                 if (seen.has(n)) return;
@@ -186,13 +253,234 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
             }
           }
         }
+        const allPhrases = [...baseWords, ...expanded.map((e) => e.phrase)];
+        const stored = persistLivePhrases(mid, args.keyword, allPhrases, rawBodies);
         return {
           keyword: args.keyword,
           mid,
           basic: baseWords,
           expanded,
           total_unique: seen.size,
+          persisted_to_lexicon: stored,
           fetched_at: new Date().toISOString(),
+        };
+      },
+    ),
+  );
+
+  // ------------------------------------------------------------ analysis tools
+  server.registerTool(
+    'analyze_roots',
+    {
+      description:
+        'Token-frequency analysis over the accumulated lexicon. Splits every suggestion containing the query into words, removes the seed words themselves, and ranks the remaining modifiers/attributes by how many suggestions they appear in. ' +
+        'Use it to find high-demand attribute words (e.g. "magnetic", "waterproof") for listings, PPC ad-group themes and product differentiation. Reads stored data only — no Amazon calls.',
+      inputSchema: {
+        query: z.string().describe('Scope: only lexicon phrases containing this substring are analyzed, e.g. "starlink mini"'),
+        mid: z.string().optional().describe('Marketplace id filter; omit for all sites'),
+        min_count: z.number().optional().default(2).describe('Only return tokens appearing in at least N suggestions (default 2)'),
+        limit: z.number().optional().default(25).describe('Max tokens returned, sorted by frequency (max 60)'),
+      },
+    },
+    billable(
+      key,
+      'analyze_roots',
+      async (args: { query: string; mid?: string; min_count?: number; limit?: number }) => {
+        const db = getDb();
+        const norm = normalizePhrase(args.query);
+        const rows = (
+          args.mid
+            ? db.prepare('SELECT phrase FROM lexicon WHERE mid = ? AND phrase_norm LIKE ?').all(args.mid, `%${norm}%`)
+            : db.prepare('SELECT phrase FROM lexicon WHERE phrase_norm LIKE ?').all(`%${norm}%`)
+        ) as Array<{ phrase: string }>;
+        const seedTokens = new Set(norm.split(/\s+/));
+        const counts = new Map<string, { count: number; examples: string[] }>();
+        for (const { phrase } of rows) {
+          const seenLocal = new Set<string>();
+          for (const t of normalizePhrase(phrase).split(/\s+/)) {
+            if (seedTokens.has(t) || t.length < 2 || seenLocal.has(t)) continue;
+            seenLocal.add(t);
+            const e = counts.get(t) ?? { count: 0, examples: [] };
+            e.count++;
+            if (e.examples.length < 3) e.examples.push(phrase);
+            counts.set(t, e);
+          }
+        }
+        const minCount = Math.max(1, args.min_count ?? 2);
+        const tokens = [...counts.entries()]
+          .map(([token, v]) => ({ token, suggestion_count: v.count, examples: v.examples }))
+          .filter((t) => t.suggestion_count >= minCount)
+          .sort((a, b) => b.suggestion_count - a.suggestion_count)
+          .slice(0, Math.min(60, Math.max(1, args.limit ?? 25)));
+        return {
+          query: args.query,
+          mid: args.mid ?? 'ALL',
+          analyzed_suggestions: rows.length,
+          tokens,
+          interpretation:
+            'token = modifier/attribute word found in stored suggestions (seed words excluded); suggestion_count = how many distinct suggestions contain it. High counts are strong demand/attribute signals for listings and PPC.',
+        };
+      },
+    ),
+  );
+
+  server.registerTool(
+    'rising_keywords',
+    {
+      description:
+        'Rank-movement analysis for one seed keyword: which suggestions are RISING, FALLING, newly appeared (NEW = early demand signal) or dropped out, based on the stored weekly snapshots. ' +
+        'Reads stored data only — no Amazon calls. Pair with get_keyword_trends for the full history.',
+      inputSchema: {
+        keyword: z.string().describe('Exact seed keyword text, e.g. "starlink mini"'),
+        mid: z.string().optional().describe('Marketplace id; defaults to US (ATVPDKIKX0DER)'),
+        runs: z.number().optional().default(4).describe('How many recent snapshots to compare (default 4, max 26)'),
+      },
+    },
+    billable(
+      key,
+      'rising_keywords',
+      async (args: { keyword: string; mid?: string; runs?: number }) => {
+        const db = getDb();
+        const mid = args.mid ?? 'ATVPDKIKX0DER';
+        const kw = db
+          .prepare('SELECT id, text, mid FROM keywords WHERE text = ? COLLATE NOCASE AND mid = ?')
+          .get(args.keyword, mid) as { id: number; text: string; mid: string } | undefined;
+        if (!kw) {
+          throw new McpToolError(`seed keyword not found: "${args.keyword}" (mid=${mid}). Only harvested seed keywords have rank history — check get_stats or a different mid.`);
+        }
+        const m = getTrendMatrix(kw.id, Math.min(26, Math.max(2, args.runs ?? 4)))!;
+        const rising: Array<{ phrase: string; from: number; to: number }> = [];
+        const falling: Array<{ phrase: string; from: number; to: number }> = [];
+        const new_terms: string[] = [];
+        const fallen_off: string[] = [];
+        for (const r of m.rows as Array<{ phrase: string; trend: string; prev?: number; latest?: number }>) {
+          if (r.trend === 'up') rising.push({ phrase: r.phrase, from: r.prev!, to: r.latest! });
+          else if (r.trend === 'down') falling.push({ phrase: r.phrase, from: r.prev!, to: r.latest! });
+          else if (r.trend === 'new') new_terms.push(r.phrase);
+          else if (r.trend === 'out') fallen_off.push(r.phrase);
+        }
+        rising.sort((a, b) => a.from - a.to - (b.from - b.to));
+        falling.sort((a, b) => b.to - b.from - (a.to - a.from));
+        return {
+          keyword: kw.text,
+          mid,
+          snapshots: m.runs,
+          rising,
+          falling,
+          new_terms,
+          fallen_off,
+          interpretation:
+            'rising/falling = searchbox rank movement vs previous snapshot (from → to, lower number = better); new_terms = first appearance (early demand signal); fallen_off = no longer suggested.',
+        };
+      },
+    ),
+  );
+
+  server.registerTool(
+    'cross_site_gap',
+    {
+      description:
+        'Compare the suggestion lexicon of two Amazon marketplaces for one topic: phrases found only in site A, only in site B, and in both. ' +
+        'Gaps often reveal region-specific demand or untapped opportunities. Reads stored data only — no Amazon calls.',
+      inputSchema: {
+        query: z.string().describe('Topic to compare, e.g. "starlink mini". Matches lexicon phrases containing this substring.'),
+        mid_a: z.string().optional().default('ATVPDKIKX0DER').describe('Marketplace id of site A (defaults to US)'),
+        mid_b: z.string().optional().default('A1F83G8C2ARO7P').describe('Marketplace id of site B (defaults to UK)'),
+        limit: z.number().optional().default(50).describe('Max phrases per difference list (max 200)'),
+      },
+    },
+    billable(
+      key,
+      'cross_site_gap',
+      async (args: { query: string; mid_a?: string; mid_b?: string; limit?: number }) => {
+        const db = getDb();
+        const norm = normalizePhrase(args.query);
+        const like = `%${norm}%`;
+        const limit = Math.min(200, Math.max(1, args.limit ?? 50));
+        const load = (mid: string) =>
+          new Set(
+            (db.prepare('SELECT phrase FROM lexicon WHERE mid = ? AND phrase_norm LIKE ?').all(mid, like) as Array<{ phrase: string }>).map(
+              (r) => r.phrase,
+            ),
+          );
+        const a = load(args.mid_a ?? 'ATVPDKIKX0DER');
+        const b = load(args.mid_b ?? 'A1F83G8C2ARO7P');
+        const onlyA = [...a].filter((x) => !b.has(x)).sort();
+        const onlyB = [...b].filter((x) => !a.has(x)).sort();
+        const common = [...a].filter((x) => b.has(x)).sort();
+        return {
+          query: args.query,
+          site_a: args.mid_a ?? 'ATVPDKIKX0DER',
+          site_b: args.mid_b ?? 'A1F83G8C2ARO7P',
+          counts: { a: a.size, b: b.size, common: common.length, only_a: onlyA.length, only_b: onlyB.length },
+          only_in_a: onlyA.slice(0, limit),
+          only_in_b: onlyB.slice(0, limit),
+          common_examples: common.slice(0, limit),
+          interpretation:
+            'phrases present in one site but not the other indicate region-specific search demand — candidate opportunities to verify with live search_suggestions.',
+        };
+      },
+    ),
+  );
+
+  server.registerTool(
+    'weekly_digest',
+    {
+      description:
+        'One-call summary across ALL seed keywords: per keyword how many suggestions rose, fell, newly appeared or dropped out in the latest snapshot vs the previous one, plus the top mover. ' +
+        'Ideal for a scheduled agent producing a weekly ops report. Reads stored data only — no Amazon calls.',
+      inputSchema: {
+        mid: z.string().optional().describe('Only include seed keywords of this marketplace; omit for all sites'),
+        top: z.number().optional().default(5).describe('Max rising/falling entries listed per keyword (default 5)'),
+      },
+    },
+    billable(
+      key,
+      'weekly_digest',
+      async (args: { mid?: string; top?: number }) => {
+        const db = getDb();
+        const kws = (
+          args.mid
+            ? db.prepare('SELECT id, text, mid FROM keywords WHERE mid = ? ORDER BY mid, text').all(args.mid)
+            : db.prepare('SELECT id, text, mid FROM keywords ORDER BY mid, text').all()
+        ) as Array<{ id: number; text: string; mid: string }>;
+        const top = Math.min(20, Math.max(1, args.top ?? 5));
+        const keywords: Array<Record<string, unknown>> = [];
+        const totals = { rising: 0, falling: 0, new_terms: 0, fallen_off: 0 };
+        for (const kw of kws) {
+          const m = getTrendMatrix(kw.id, 2)!;
+          const rows = m.rows as Array<{ phrase: string; trend: string; prev?: number; latest?: number }>;
+          if (!rows.length) continue;
+          const rising = rows.filter((r) => r.trend === 'up').map((r) => ({ phrase: r.phrase, from: r.prev!, to: r.latest! }));
+          const falling = rows.filter((r) => r.trend === 'down').map((r) => ({ phrase: r.phrase, from: r.prev!, to: r.latest! }));
+          const newTerms = rows.filter((r) => r.trend === 'new').map((r) => r.phrase);
+          const fallen = rows.filter((r) => r.trend === 'out').map((r) => r.phrase);
+          totals.rising += rising.length;
+          totals.falling += falling.length;
+          totals.new_terms += newTerms.length;
+          totals.fallen_off += fallen.length;
+          const topMover = [...rising].sort((x, y) => (y.from - y.to) - (x.from - x.to))[0] ?? null;
+          keywords.push({
+            keyword: kw.text,
+            site: kw.mid,
+            rising_count: rising.length,
+            rising: rising.slice(0, top),
+            falling_count: falling.length,
+            falling: falling.slice(0, top),
+            new_terms: newTerms.slice(0, top),
+            fallen_off: fallen.slice(0, top),
+            top_mover: topMover,
+            snapshot_dates: (m.runs as Array<{ date: string }>).map((r) => r.date),
+          });
+        }
+        return {
+          generated_at: new Date().toISOString(),
+          scope: args.mid ?? 'ALL',
+          keywords_analyzed: keywords.length,
+          totals,
+          keywords,
+          interpretation:
+            'compares the two most recent snapshots per seed keyword. Use totals + per-keyword lists to draft a weekly report: what moved up, what slipped, what is new.',
         };
       },
     ),

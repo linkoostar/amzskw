@@ -51,11 +51,25 @@ npm run build && npm start
 | `list_sites` | 15 个站点 marketplace id | 0 |
 | `get_stats` | 词库统计 | 0 |
 | `lookup_lexicon` | 查已积累词库（不打亚马逊） | 1 |
-| `get_keyword_trends` | 种子词排名历史矩阵 | 2 |
-| `search_suggestions` | 实时抓基础联想（live） | 10 |
-| `search_suggestions_expand` | 实时 a-z 深度挖掘（live，较慢） | 30 |
+| `get_keyword_trends` | 种子词排名历史矩阵（升/降/新上榜/落榜） | 2 |
+| `rising_keywords` | 单词的上升/下降/新词/落榜清单 | 3 |
+| `weekly_digest` | 全部种子词的周报摘要（一次调用） | 3 |
+| `cross_site_gap` | 两个站点的联想词差集（市场空白） | 3 |
+| `analyze_roots` | 词根/修饰词频率分析（卖点词、PPC 词包） | 5 |
+| `search_suggestions` | 实时抓基础联想（live，受管控） | 10 |
+| `search_suggestions_expand` | 实时 a-z 深度挖掘（live，较慢，受管控） | 30 |
 
 价格在「系统设置」页可调；余额不足返回 `insufficient credits` 错误；每 key 每分钟限流可配。
+
+### 实时抓取管控（live 工具）
+
+`search_suggestions` / `search_suggestions_expand` 直打亚马逊，有三层管控（API Keys 页可管理）：
+
+1. **按 Key 开关**：每个 API Key 可一键「允许 / 禁止」实时抓取
+2. **按 Key 日限额**：每 Key 每天的 live 调用次数上限（默认 20，可改），UTC 零点重置
+3. **全服日上限**：所有 Key 合计的 live 调用日上限（设置项 `mcp_live_global_daily`，默认 200）
+
+live 抓到的词默认**落库**（合并进词库 + 原始报文归档 fetch_log，设置项 `mcp_live_persist` 可关掉变成纯透传），每个计费调用都会记录到 `api_calls` 审计表。
 
 ## 网络受限环境
 

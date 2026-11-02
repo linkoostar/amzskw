@@ -3,7 +3,7 @@ import { getDb, getAllSettings, setSetting, getSetting } from './db.js';
 import { checkAdminPassword, createAdminSession, destroyAdminSession, SESSION_COOKIE, validateAdminSession } from './auth.js';
 import { startRun, cancelRun, breakerState, liveFetch } from './crawler.js';
 import { getStats, getKeywordSnapshot, getTrendMatrix, searchLexicon } from './queries.js';
-import { addCredits } from './credits.js';
+import { addCredits, countLiveCallsToday } from './credits.js';
 import { reloadScheduler, schedulerStatus } from './scheduler.js';
 import { config } from './config.js';
 import { csvEscape, nowIso, randomToken, sha256hex } from './util.js';
@@ -223,19 +223,24 @@ export function registerApi(app: FastifyInstance): void {
   });
 
   // --------------------------------------------------------------- api keys
-  app.get('/api/keys', async () =>
-    db
-      .prepare('SELECT id, name, key_prefix, active, credits_balance, created_at, last_used_at, revoked_at FROM api_keys ORDER BY id DESC')
-      .all(),
-  );
+  app.get('/api/keys', async () => {
+    const rows = db
+      .prepare('SELECT id, name, key_prefix, active, credits_balance, can_live, live_daily_limit, created_at, last_used_at, revoked_at FROM api_keys ORDER BY id DESC')
+      .all() as Array<{ id: number; live_today?: number }>;
+    for (const r of rows) r.live_today = countLiveCallsToday(r.id);
+    return rows;
+  });
 
   app.post('/api/keys', async (req, reply) => {
-    const b = req.body as { name?: string; credits?: number };
+    const b = req.body as { name?: string; credits?: number; can_live?: number; live_daily_limit?: number };
     const name = (b.name ?? '').trim() || 'unnamed';
     const raw = 'ak_' + randomToken(24);
     const id = db
-      .prepare('INSERT INTO api_keys(name, key_prefix, key_hash, credits_balance) VALUES (?, ?, ?, ?)')
-      .run(name, raw.slice(0, 12), sha256hex(raw), Math.max(0, Math.round(b.credits ?? 0))).lastInsertRowid;
+      .prepare('INSERT INTO api_keys(name, key_prefix, key_hash, credits_balance, can_live, live_daily_limit) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        name, raw.slice(0, 12), sha256hex(raw), Math.max(0, Math.round(b.credits ?? 0)),
+        b.can_live === 0 ? 0 : 1, Math.max(0, Math.round(b.live_daily_limit ?? 20)),
+      ).lastInsertRowid;
     if ((b.credits ?? 0) > 0) {
       // ledger entry for the initial balance
       db.prepare('INSERT INTO credits_ledger(api_key_id, delta, balance_after, reason, detail) VALUES (?, ?, ?, ?, ?)').run(
@@ -243,6 +248,18 @@ export function registerApi(app: FastifyInstance): void {
       );
     }
     return { id, key: raw }; // shown once
+  });
+
+  app.put('/api/keys/:id', async (req) => {
+    const { id } = req.params as { id: string };
+    const b = req.body as { can_live?: number; live_daily_limit?: number };
+    if (b.can_live !== undefined) {
+      db.prepare('UPDATE api_keys SET can_live = ? WHERE id = ?').run(b.can_live ? 1 : 0, id);
+    }
+    if (b.live_daily_limit !== undefined) {
+      db.prepare('UPDATE api_keys SET live_daily_limit = ? WHERE id = ?').run(Math.max(0, Math.round(b.live_daily_limit)), id);
+    }
+    return { ok: true };
   });
 
   app.post('/api/keys/:id/revoke', async (req) => {

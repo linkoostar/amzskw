@@ -250,6 +250,21 @@ const App = {
       this.notify('已删除');
       this.loadKeys();
     },
+    async toggleLive(k) {
+      const next = k.can_live ? 0 : 1;
+      await api('PUT', '/api/keys/' + k.id, { can_live: next });
+      k.can_live = next;
+      this.notify(next ? '已允许实时抓取' : '已禁止实时抓取');
+    },
+    async setLiveLimit(k) {
+      if (!k.can_live) { this.notify('请先允许实时抓取'); return; }
+      const v = prompt(`「${k.name}」每日实时抓取限额（今日已用 ${k.live_today ?? 0} 次）:`, String(k.live_daily_limit));
+      if (v === null) return;
+      const n = Math.max(0, Math.round(Number(v) || 0));
+      await api('PUT', '/api/keys/' + k.id, { live_daily_limit: n });
+      k.live_daily_limit = n;
+      this.notify('限额已更新');
+    },
     async topupKey(k, current) {
       const v = prompt(`为「${k.name}」充值 credits（正数充值，负数扣减）:`, '1000');
       if (v === null) return;
@@ -549,13 +564,17 @@ const App = {
       </div>
       <div class="card">
         <table v-if="keyList.length">
-          <thead><tr><th>名称</th><th>Key</th><th>状态</th><th class="num">Credits 余额</th><th>最近调用</th><th>创建时间</th><th style="width:230px"></th></tr></thead>
+          <thead><tr><th>名称</th><th>Key</th><th>状态</th><th class="num">Credits 余额</th><th>实时抓取（今日用量）</th><th>最近调用</th><th>创建时间</th><th style="width:250px"></th></tr></thead>
           <tbody>
             <tr v-for="k in keyList" :key="k.id">
               <td style="font-weight:600">{{k.name}}</td>
               <td class="mono muted">{{k.key_prefix}}…</td>
               <td><span class="tag" :class="k.active?'green':'red'">{{k.active?'有效':'已吊销'}}</span></td>
               <td class="num"><b>{{k.credits_balance}}</b></td>
+              <td>
+                <button class="btn sm" :class="k.can_live?'':'danger'" style="margin-right:6px" @click="toggleLive(k)">{{k.can_live?'允许':'禁止'}}</button>
+                <a class="mono muted" style="cursor:pointer;text-decoration:underline dotted" @click="setLiveLimit(k)" :title="k.can_live?'点击修改每日限额':'实时抓取已禁止'">{{k.live_today ?? 0}}/{{k.can_live ? k.live_daily_limit : '—'}} 次/日</a>
+              </td>
               <td class="muted">{{fmtDate(k.last_used_at)}}</td>
               <td class="muted">{{fmtDate(k.created_at)}}</td>
               <td><div class="row" style="flex-wrap:nowrap">

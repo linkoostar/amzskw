@@ -15,6 +15,8 @@ export interface ApiKeyRow {
   key_hash: string;
   active: number;
   credits_balance: number;
+  can_live: number;
+  live_daily_limit: number;
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
@@ -74,6 +76,25 @@ export function addCredits(apiKeyId: number, amount: number, reason: string, det
 
 export function touchLastUsed(apiKeyId: number): void {
   getDb().prepare('UPDATE api_keys SET last_used_at = ? WHERE id = ?').run(nowIso(), apiKeyId);
+}
+
+/** Record one billable tool call for quota/audit purposes. */
+export function logApiCall(apiKeyId: number, tool: string): void {
+  getDb().prepare('INSERT INTO api_calls(api_key_id, tool) VALUES (?, ?)').run(apiKeyId, tool);
+}
+
+/** Count live-fetch tool calls since midnight (UTC). */
+export function countLiveCallsToday(apiKeyId?: number): number {
+  const LIVE_TOOLS = ['search_suggestions', 'search_suggestions_expand'];
+  const scope = apiKeyId ? 'AND api_key_id = ?' : '';
+  const args = apiKeyId ? [...LIVE_TOOLS, apiKeyId] : LIVE_TOOLS;
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) c FROM api_calls WHERE tool IN (${LIVE_TOOLS.map(() => '?').join(',')}) ${scope}
+       AND created_at >= datetime('now', 'start of day')`,
+    )
+    .get(...args) as { c: number };
+  return row.c;
 }
 
 // --- simple in-memory rate limiter per api key ---

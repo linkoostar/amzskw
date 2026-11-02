@@ -72,6 +72,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   fetch_log_keep_days: '30',
   // mcp
   mcp_rate_limit_per_min: '60',
+  // live-fetch governance: 1 = MCP live results are also merged into the lexicon, 0 = ephemeral
+  mcp_live_persist: '1',
+  // global safety cap: max live tool calls (all keys) per day
+  mcp_live_global_daily: '200',
 };
 
 const DEFAULT_SITES: Array<{ mid: string; name: string; flag: string; locale: string; sort: number }> = [

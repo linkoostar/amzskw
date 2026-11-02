@@ -24,9 +24,9 @@ const App = {
       stats: null,
       sites: [],
       // keywords
-      kwList: [], kwFilters: { status: '', mid: '', search: '' },
+      kwList: [], kwFilters: { status: '', mid: '', search: '', source: '' },
       kwForm: { text: '', mid: 'ATVPDKIKX0DER', alias: 'aps', note: '' },
-      importText: '', importMid: 'ATVPDKIKX0DER', importAlias: 'aps',
+      kwSelected: [],
       snapshot: null, snapLoading: false,
       // runs
       runList: [], runDetail: null, runPoll: null,
@@ -110,19 +110,30 @@ const App = {
       } catch (e) { this.handleErr(e); }
     },
     async addKeyword() {
-      if (!this.kwForm.text.trim()) return;
+      const lines = this.kwForm.text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (!lines.length) return;
       try {
-        await api('POST', '/api/keywords', this.kwForm);
+        if (lines.length === 1) {
+          await api('POST', '/api/keywords', { text: lines[0], mid: this.kwForm.mid, alias: this.kwForm.alias, note: this.kwForm.note });
+          this.notify('已添加关键词');
+        } else {
+          const r = await api('POST', '/api/keywords/import', { text: lines.join('\n'), mid: this.kwForm.mid, alias: this.kwForm.alias });
+          this.notify(`批量导入完成：新增 ${r.added}，跳过重复 ${r.skipped}`);
+        }
         this.kwForm.text = ''; this.kwForm.note = '';
-        this.notify('已添加关键词');
         this.loadKeywords();
       } catch (e) { this.handleErr(e); }
     },
-    async importKeywords() {
+    toggleAllKw(e) {
+      this.kwSelected = e.target.checked ? this.kwList.map((k) => k.id) : [];
+    },
+    async batchKw(action) {
+      const label = { enable: '启用', pause: '暂停', delete: '删除' }[action];
+      if (!confirm(`确认${label}选中的 ${this.kwSelected.length} 个关键词？`)) return;
       try {
-        const r = await api('POST', '/api/keywords/import', { text: this.importText, mid: this.importMid, alias: this.importAlias });
-        this.notify(`导入完成：新增 ${r.added}，跳过重复 ${r.skipped}`);
-        this.importText = '';
+        const r = await api('POST', '/api/keywords/batch', { action, ids: this.kwSelected });
+        this.notify(`批量${label}完成：${r.affected} 项`);
+        this.kwSelected = [];
         this.loadKeywords();
       } catch (e) { this.handleErr(e); }
     },
@@ -383,20 +394,12 @@ const App = {
         <div class="card">
           <h3>添加关键词</h3>
           <div class="row" style="margin-bottom:10px">
-            <input v-model="kwForm.text" placeholder="关键词，如 starlink mini" style="flex:1;min-width:180px" @keyup.enter="addKeyword">
-            <select v-model="kwForm.mid"><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
+            <textarea v-model="kwForm.text" style="flex:1;min-height:72px" placeholder="一个关键词直接添加；多个关键词请按行填写（Ctrl+Enter 提交），如：&#10;starlink mini&#10;portable power station" @keydown.ctrl.enter.prevent="addKeyword"></textarea>
           </div>
           <div class="row">
-            <input v-model="kwForm.note" placeholder="备注（可选）" style="flex:1">
+            <select v-model="kwForm.mid"><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
+            <input v-model="kwForm.note" placeholder="备注（可选，仅单个添加时生效）" style="flex:1">
             <button class="btn primary" @click="addKeyword">添加</button>
-          </div>
-        </div>
-        <div class="card">
-          <h3>批量导入（每行一个）</h3>
-          <textarea v-model="importText" placeholder="starlink mini&#10;portable power station&#10;..."></textarea>
-          <div class="row" style="margin-top:10px">
-            <select v-model="importMid"><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
-            <button class="btn primary" @click="importKeywords">导入</button>
           </div>
         </div>
       </div>
@@ -404,14 +407,23 @@ const App = {
         <div class="filters">
           <select v-model="kwFilters.mid" @change="loadKeywords"><option value="">全部站点</option><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
           <select v-model="kwFilters.status" @change="loadKeywords"><option value="">全部状态</option><option value="active">活跃</option><option value="paused">暂停</option></select>
+          <select v-model="kwFilters.source" @change="loadKeywords"><option value="">全部来源</option><option value="manual">手动添加</option><option value="mcp-live">Agent 自动</option></select>
           <input v-model="kwFilters.search" placeholder="搜索关键词" @keyup.enter="loadKeywords">
           <button class="btn sm" @click="loadKeywords">筛选</button>
         </div>
+        <div class="row" v-if="kwSelected.length" style="margin-bottom:10px;background:#f1f5f9;padding:8px 12px;border-radius:8px">
+          <b>已选 {{kwSelected.length}} 项：</b>
+          <button class="btn sm" @click="batchKw('enable')">批量启用</button>
+          <button class="btn sm" @click="batchKw('pause')">批量暂停</button>
+          <button class="btn sm danger" @click="batchKw('delete')">批量删除</button>
+          <button class="btn sm" @click="kwSelected=[]">取消选择</button>
+        </div>
         <table v-if="kwList.length">
-          <thead><tr><th>关键词</th><th>站点</th><th>状态</th><th class="num">联想词总数</th><th>最近抓取</th><th>备注</th><th style="width:230px"></th></tr></thead>
+          <thead><tr><th style="width:34px"><input type="checkbox" :checked="kwSelected.length>0 && kwSelected.length===kwList.length" @change="toggleAllKw"></th><th>关键词</th><th>站点</th><th>状态</th><th class="num">联想词总数</th><th>最近抓取</th><th>备注</th><th style="width:230px"></th></tr></thead>
           <tbody>
             <tr v-for="kw in kwList" :key="kw.id">
-              <td style="font-weight:600">{{kw.text}}</td>
+              <td><input type="checkbox" :value="kw.id" v-model="kwSelected"></td>
+              <td style="font-weight:600">{{kw.text}} <span v-if="kw.source==='mcp-live'" class="tag blue" title="由 agent live 抓取自动创建，暂停待审核">Agent</span></td>
               <td>{{siteFlag(kw.mid)}}</td>
               <td><span class="tag" :class="kw.status==='active'?'green':'gray'">{{kw.status==='active'?'活跃':'暂停'}}</span></td>
               <td class="num">{{kw.suggestion_count}}</td>

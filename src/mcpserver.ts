@@ -58,7 +58,7 @@ function persistLiveResults(mid: string, seedKeyword: string, phrases: string[],
        ON CONFLICT(mid, phrase_norm) DO UPDATE SET seen_count = seen_count + 1, last_seen_at = excluded.last_seen_at`,
     );
     const insKw = db.prepare(
-      "INSERT OR IGNORE INTO keywords(text, mid, alias, status, note) VALUES (?, ?, 'aps', 'paused', ?)",
+      "INSERT OR IGNORE INTO keywords(text, mid, alias, status, note, source) VALUES (?, ?, 'aps', 'paused', ?, 'mcp-live')",
     );
     const seen = new Set<string>();
     const tx = db.transaction(() => {

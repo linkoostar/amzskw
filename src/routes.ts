@@ -44,11 +44,12 @@ export function registerApi(app: FastifyInstance): void {
 
   // ---------------------------------------------------------------- keywords
   app.get('/api/keywords', async (req) => {
-    const q = req.query as { status?: string; mid?: string; search?: string };
+    const q = req.query as { status?: string; mid?: string; search?: string; source?: string };
     const where: string[] = [];
     const args: unknown[] = [];
     if (q.status) { where.push('k.status = ?'); args.push(q.status); }
     if (q.mid) { where.push('k.mid = ?'); args.push(q.mid); }
+    if (q.source) { where.push('k.source = ?'); args.push(q.source); }
     if (q.search) { where.push('k.text LIKE ?'); args.push(`%${q.search}%`); }
     const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
     return db
@@ -117,6 +118,23 @@ export function registerApi(app: FastifyInstance): void {
     const { id } = req.params as { id: string };
     db.prepare('DELETE FROM keywords WHERE id = ?').run(id);
     return { ok: true };
+  });
+
+  app.post('/api/keywords/batch', async (req, reply) => {
+    const b = req.body as { action?: string; ids?: number[] };
+    const ids = (b.ids ?? []).map(Number).filter(Number.isFinite);
+    if (!ids.length) return reply.code(400).send({ error: 'ids required' });
+    const ph = ids.map(() => '?').join(',');
+    let affected = 0;
+    if (b.action === 'enable' || b.action === 'pause') {
+      const st = b.action === 'enable' ? 'active' : 'paused';
+      affected = db.prepare(`UPDATE keywords SET status = ? WHERE id IN (${ph})`).run(st, ...ids).changes;
+    } else if (b.action === 'delete') {
+      affected = db.prepare(`DELETE FROM keywords WHERE id IN (${ph})`).run(...ids).changes;
+    } else {
+      return reply.code(400).send({ error: 'invalid action, expect enable | pause | delete' });
+    }
+    return { ok: true, affected };
   });
 
   // ------------------------------------------------------- keyword snapshot

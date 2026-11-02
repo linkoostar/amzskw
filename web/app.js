@@ -32,6 +32,7 @@ const App = {
       runList: [], runDetail: null, runPoll: null,
       // trends
       trendKid: null, trendRuns: 12, trendData: null, trendLoading: false,
+      trendKwQuery: '', trendKwOpen: false,
       // lexicon
       lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1, lexSort: 'cnt', lexDir: 'desc',
       // keys
@@ -44,6 +45,14 @@ const App = {
   computed: {
     keywordOptions() { return this.kwList; },
     lexTotalPages() { return this.lexData ? Math.max(1, Math.ceil(this.lexData.total / 50)) : 1; },
+    trendKwOptions() {
+      const q = this.trendKwQuery.trim().toLowerCase();
+      // 输入框内容和选中项一致时不过滤，避免刚选中就被过滤到空列表
+      const sel = this.kwList.find((k) => k.id === this.trendKid);
+      if (sel && this.trendKwQuery === this.trendKwLabel(sel)) return this.kwList.slice(0, 60);
+      const list = q ? this.kwList.filter((k) => k.text.toLowerCase().includes(q) || k.mid.toLowerCase().includes(q)) : this.kwList;
+      return list.slice(0, 60);
+    },
     mcpConfig() {
       if (!this.newKey) return '';
       return JSON.stringify({
@@ -76,7 +85,7 @@ const App = {
       if (r === 'dashboard') this.loadStats();
       if (r === 'keywords') this.loadKeywords();
       if (r === 'runs') { this.loadRuns(); this.startPoll(); } else this.stopPoll();
-      if (r === 'trends') { this.loadKeywords().then(() => { if (!this.trendKid && this.kwList.length) this.trendKid = this.kwList[0].id; if (this.trendKid) this.loadTrend(); }); }
+      if (r === 'trends') { this.loadKeywords().then(() => { if (!this.trendKid && this.kwList.length) this.trendKid = this.kwList[0].id; if (this.trendKid) { this.syncTrendKwQuery(); this.loadTrend(); } }); }
       if (r === 'lexicon') this.loadLexicon();
       if (r === 'keys') this.loadKeys();
       if (r === 'settings') this.loadSettings();
@@ -214,6 +223,17 @@ const App = {
     },
     trendArrow(row) {
       return { up: '<span class="badge-up">↑' + row.prev + '→' + row.latest + '</span>', down: '<span class="badge-down">↓' + row.prev + '→' + row.latest + '</span>', same: '<span class="muted">·</span>', new: '<span class="badge-new">NEW</span>', out: '<span class="badge-out">落榜</span>' }[row.trend] || '';
+    },
+    trendKwLabel(kw) { return this.siteFlag(kw.mid) + ' ' + kw.text; },
+    pickTrendKw(kw) {
+      this.trendKid = kw.id;
+      this.trendKwQuery = this.trendKwLabel(kw);
+      this.trendKwOpen = false;
+      this.loadTrend();
+    },
+    syncTrendKwQuery() {
+      const kw = this.kwList.find((k) => k.id === this.trendKid);
+      if (kw) this.trendKwQuery = this.trendKwLabel(kw);
     },
 
     // ------------------------------------------------------------- lexicon
@@ -486,9 +506,16 @@ const App = {
     <template v-else-if="route==='trends'">
       <div class="card">
         <div class="row">
-          <select v-model="trendKid" @change="loadTrend" style="min-width:220px">
-            <option v-for="kw in keywordOptions" :key="kw.id" :value="kw.id">{{siteFlag(kw.mid)}} {{kw.text}}</option>
-          </select>
+          <div class="combo" style="min-width:260px">
+            <input v-model="trendKwQuery" placeholder="输入关键词筛选，如 stylus…" autocomplete="off"
+                   @focus="trendKwOpen=true; syncTrendKwQuery(); trendKwQuery=''" @input="trendKwOpen=true" @blur="trendKwOpen=false; syncTrendKwQuery()"
+                   @keydown.escape="trendKwOpen=false">
+            <div class="combo-list" v-if="trendKwOpen">
+              <div v-for="kw in trendKwOptions" :key="kw.id" class="combo-item" :class="{active:kw.id===trendKid}"
+                   @mousedown.prevent="pickTrendKw(kw)">{{trendKwLabel(kw)}}</div>
+              <div v-if="!trendKwOptions.length" class="combo-item muted">无匹配关键词</div>
+            </div>
+          </div>
           <select v-model.number="trendRuns" @change="loadTrend">
             <option :value="6">最近 6 次快照</option><option :value="12">最近 12 次</option><option :value="26">最近 26 次</option><option :value="52">最近 52 次</option>
           </select>

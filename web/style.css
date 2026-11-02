@@ -58,6 +58,15 @@ textarea{width:100%;resize:vertical;min-height:110px;font-family:ui-monospace,mo
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
 .filters input,.filters select{padding:6px 10px;font-size:13px}
 
+/* 可搜索下拉（combobox） */
+.combo{position:relative;flex:0 1 auto}
+.combo input{width:100%;padding:6px 10px;font-size:13px}
+.combo-list{position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:320px;overflow-y:auto;z-index:50;
+  background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 12px 28px rgba(15,23,42,.16);padding:4px}
+.combo-item{padding:7px 10px;font-size:13px;border-radius:7px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.combo-item:hover{background:#eff6ff}
+.combo-item.active{background:#dbeafe;font-weight:600}
+
 .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;font-weight:600}
 .tag.green{background:#e8f7ee;color:var(--green)}
 .tag.gray{background:#eef1f5;color:var(--muted)}

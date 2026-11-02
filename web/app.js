@@ -33,7 +33,7 @@ const App = {
       // trends
       trendKid: null, trendRuns: 12, trendData: null, trendLoading: false,
       // lexicon
-      lexQuery: '', lexMid: '', lexData: null, lexPage: 0,
+      lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1,
       // keys
       keyList: [], keyForm: { name: '', credits: 100 }, newKey: null, ledger: null, ledgerName: '',
       // settings
@@ -43,6 +43,7 @@ const App = {
   },
   computed: {
     keywordOptions() { return this.kwList; },
+    lexTotalPages() { return this.lexData ? Math.max(1, Math.ceil(this.lexData.total / 50)) : 1; },
   },
   async mounted() {
     window.addEventListener('hashchange', () => this.onRoute());
@@ -196,7 +197,13 @@ const App = {
         const p = new URLSearchParams({ query: this.lexQuery, limit: '50', offset: String(this.lexPage * 50) });
         if (this.lexMid) p.set('mid', this.lexMid);
         this.lexData = await api('GET', '/api/lexicon?' + p);
+        this.lexJump = this.lexPage + 1;
       } catch (e) { this.handleErr(e); }
+    },
+    jumpLex() {
+      const p = Math.min(Math.max(1, Math.round(Number(this.lexJump) || 1)), this.lexTotalPages);
+      this.lexPage = p - 1;
+      this.loadLexicon();
     },
 
     // ---------------------------------------------------------------- keys
@@ -475,8 +482,10 @@ const App = {
         <div v-else class="empty">无匹配结果</div>
         <div class="row" style="margin-top:12px;justify-content:center" v-if="lexData.total>50">
           <button class="btn sm" :disabled="lexPage===0" @click="lexPage--;loadLexicon()">上一页</button>
-          <span class="muted">第 {{lexPage+1}} 页</span>
-          <button class="btn sm" :disabled="(lexPage+1)*50>=lexData.total" @click="lexPage++;loadLexicon()">下一页</button>
+          <span class="muted">第 {{lexPage+1}} / {{lexTotalPages}} 页</span>
+          <button class="btn sm" :disabled="lexPage+1>=lexTotalPages" @click="lexPage++;loadLexicon()">下一页</button>
+          <input v-model.number="lexJump" type="number" min="1" :max="lexTotalPages" style="width:90px" @keyup.enter="jumpLex" title="输入页码后回车">
+          <button class="btn sm" @click="jumpLex">跳转</button>
         </div>
       </div>
     </template>
@@ -621,12 +630,16 @@ const App = {
         <template v-else-if="modal.type==='snapshot' && modal.snap">
           <p class="muted" style="margin-bottom:10px">快照时间：{{fmtDate(modal.snap.fetched_at)}} · 基础 {{modal.snap.basic.length}} 条 · 扩展 {{modal.snap.expand.length}} 条</p>
           <div style="max-height:480px;overflow:auto">
-            <h3 style="font-size:13px;margin:6px 0">基础联想（按搜索框排名）</h3>
+            <h3 style="font-size:13px;margin:6px 0">基础联想（核心词 · 按搜索框排名）</h3>
             <table><tbody>
-              <tr v-for="b in modal.snap.basic" :key="'b'+b.position"><td class="num" style="width:40px">{{b.position}}</td><td>{{b.phrase}}</td><td class="muted">{{b.strategy_id}}</td></tr>
+              <tr v-for="b in modal.snap.basic" :key="'b'+b.position">
+                <td class="num" style="width:40px">{{b.position}}</td>
+                <td>{{b.phrase}} <span class="tag blue" style="margin-left:6px">核心</span></td>
+                <td class="muted">{{b.strategy_id}}</td>
+              </tr>
             </tbody></table>
             <template v-if="modal.snap.expand.length">
-              <h3 style="font-size:13px;margin:14px 0 6px">扩展联想</h3>
+              <h3 style="font-size:13px;margin:14px 0 6px">扩展联想（按字母排序）</h3>
               <table><tbody>
                 <tr v-for="(e,i) in modal.snap.expand" :key="'e'+i">
                   <td class="num" style="width:40px">{{e.position}}</td><td>{{e.phrase}}</td>

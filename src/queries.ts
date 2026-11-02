@@ -56,7 +56,7 @@ export function getKeywordSnapshot(keywordId: number) {
     .prepare("SELECT phrase, position, strategy_id FROM suggestions_raw WHERE run_item_id=? AND source_type='basic' ORDER BY position")
     .all(item.id);
   const expandRows = db
-    .prepare("SELECT phrase, position, parent_phrase, letter, strategy_id FROM suggestions_raw WHERE run_item_id=? AND source_type='expand' ORDER BY parent_phrase, position")
+    .prepare("SELECT phrase, position, parent_phrase, letter, strategy_id FROM suggestions_raw WHERE run_item_id=? AND source_type='expand' ORDER BY phrase COLLATE NOCASE, position")
     .all(item.id) as Array<{ phrase: string; position: number; parent_phrase: string; letter: string; strategy_id: string }>;
   const expand: Array<{ parent: string; letter: string; phrase: string; position: number }> = expandRows.map((r) => ({
     parent: r.parent_phrase, letter: r.letter, phrase: r.phrase, position: r.position,

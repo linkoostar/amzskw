@@ -317,12 +317,30 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
       'search_suggestions',
       async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
         const mid = args.mid ?? 'ATVPDKIKX0DER';
-        const res = await liveFetch({
-          prefix: args.keyword,
-          mid,
-          alias: args.alias ?? 'aps',
-          limit: Math.min(30, Math.max(1, args.limit ?? 15)),
-        });
+        const deadlineMs = getSettingNum('mcp_live_sync_deadline_ms') || 25000;
+        let res;
+        try {
+          res = await liveFetch(
+            {
+              prefix: args.keyword,
+              mid,
+              alias: args.alias ?? 'aps',
+              limit: Math.min(30, Math.max(1, args.limit ?? 15)),
+            },
+            deadlineMs,
+          );
+        } catch (e) {
+          const msg = (e as Error).message ?? String(e);
+          if (msg.includes('deadline')) {
+            const budget = deadlineMs >= 1000 ? `${Math.round(deadlineMs / 1000)}s` : `${deadlineMs}ms`;
+            throw new McpToolError(
+              `live fetch exceeded the ${budget} synchronous budget (upstream slow). ` +
+                `Use search_suggestions_expand (async job, poll get_expand_job) for slower deep mining, ` +
+                `or lookup_lexicon / search_suggestions for already-stored data.`,
+            );
+          }
+          throw e;
+        }
         const values = res.suggestions.map((s) => s.value);
         const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, values, [res.body], clientId);
         return {
@@ -550,17 +568,22 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
         const norm = normalizePhrase(args.query);
         const like = `%${norm}%`;
         const limit = Math.min(200, Math.max(1, args.limit ?? 50));
-        const load = (mid: string) =>
-          new Set(
-            (db.prepare('SELECT phrase FROM lexicon WHERE mid = ? AND phrase_norm LIKE ?').all(mid, like) as Array<{ phrase: string }>).map(
-              (r) => r.phrase,
-            ),
-          );
+        // compare on phrase_norm so case/punctuation differences are not reported as site gaps;
+        // keep one stored display form per norm for readability
+        const load = (mid: string) => {
+          const rows = db
+            .prepare('SELECT phrase, phrase_norm FROM lexicon WHERE mid = ? AND phrase_norm LIKE ?')
+            .all(mid, like) as Array<{ phrase: string; phrase_norm: string }>;
+          const map = new Map<string, string>();
+          for (const r of rows) if (!map.has(r.phrase_norm)) map.set(r.phrase_norm, r.phrase);
+          return map;
+        };
         const a = load(args.mid_a ?? 'ATVPDKIKX0DER');
         const b = load(args.mid_b ?? 'A1F83G8C2ARO7P');
-        const onlyA = [...a].filter((x) => !b.has(x)).sort();
-        const onlyB = [...b].filter((x) => !a.has(x)).sort();
-        const common = [...a].filter((x) => b.has(x)).sort();
+        const disp = (m: Map<string, string>, k: string) => m.get(k) ?? k;
+        const onlyA = [...a.keys()].filter((k) => !b.has(k)).sort().map((k) => disp(a, k));
+        const onlyB = [...b.keys()].filter((k) => !a.has(k)).sort().map((k) => disp(b, k));
+        const common = [...a.keys()].filter((k) => b.has(k)).sort().map((k) => disp(a, k));
         return {
           query: args.query,
           site_a: args.mid_a ?? 'ATVPDKIKX0DER',

@@ -79,6 +79,7 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   breaker_pause_ms: '1800000',
   // retention
   fetch_log_keep_days: '30',
+  mcp_live_sync_deadline_ms: '25000',
   // mcp
   mcp_rate_limit_per_min: '60',
   // live-fetch governance: 1 = MCP live results are also merged into the lexicon, 0 = ephemeral

@@ -140,9 +140,17 @@ const App = {
     async batchKw(action) {
       const label = { enable: '启用', pause: '暂停', delete: '删除' }[action];
       if (!confirm(`确认${label}选中的 ${this.kwSelected.length} 个关键词？`)) return;
+      let purge = false;
+      if (action === 'delete') {
+        purge = confirm(`是否同时彻底清除这 ${this.kwSelected.length} 个关键词的联想词库与全部抓取历史？\n\n【确定】= 彻底清除（不可恢复）\n【取消】= 仅删除关键词（保留词库与历史，重加自动接回）`);
+      }
       try {
-        const r = await api('POST', '/api/keywords/batch', { action, ids: this.kwSelected });
-        this.notify(`批量${label}完成：${r.affected} 项`);
+        const r = await api('POST', '/api/keywords/batch', { action, ids: this.kwSelected, purge });
+        this.notify(action === 'delete'
+          ? (purge
+            ? `已删除并彻底清除 ${r.affected} 个关键词（词库移除 ${r.purged_lexicon ?? 0} 条）`
+            : `已删除 ${r.affected} 个关键词（历史已保留，重加自动接回）`)
+          : `批量${label}完成：${r.affected} 项`);
         this.kwSelected = [];
         this.loadKeywords();
       } catch (e) { this.handleErr(e); }
@@ -292,9 +300,9 @@ const App = {
       this.loadKeys();
     },
     async delKey(k) {
-      if (!confirm(`彻底删除「${k.name}」？其余额与 credits 流水将一并清除，不可恢复！建议先用「吊销」保留记录。`)) return;
+      if (!confirm(`删除「${k.name}」？\n\n· 该 key 将立即失效并从列表移除；\n· credits 流水与调用审计记录会保留，便于追溯。`)) return;
       await api('DELETE', '/api/keys/' + k.id);
-      this.notify('已删除');
+      this.notify('已删除（审计与流水已保留）');
       this.loadKeys();
     },
     async toggleLive(k) {

@@ -12,6 +12,60 @@ import { csvEscape, nowIso, randomToken, sha256hex } from './util.js';
 export function registerApi(app: FastifyInstance): void {
   const db = getDb();
 
+  /** Permanently remove one keyword plus the lexicon entries it discovered and its
+   *  full harvest history. Shared by single delete (?purge=1) and batch delete. */
+  function purgeKeyword(kw: { id: number; text: string; mid: string }): number {
+    // scope = this keyword's snapshots, including orphaned rows from earlier deletions
+    // of the same text+site (they were created under a now-deleted keyword id).
+    const scopeSql =
+      `(ri.keyword_id = ? OR (ri.keyword_id IS NULL AND ri.keyword_text = ? COLLATE NOCASE AND ri.mid = ?))`;
+    const tx = db.transaction(() => {
+      // 1) lexicon: remove suggestions discovered under this seed, unless also
+      //    referenced by another keyword's history (shared words survive)
+      const mine = (
+        db
+          .prepare(
+            `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+             JOIN run_items ri ON ri.id = s.run_item_id
+             WHERE ${scopeSql}`,
+          )
+          .all(kw.id, kw.text, kw.mid) as Array<{ phrase_norm: string }>
+      ).map((r) => r.phrase_norm);
+      let purgedLex = 0;
+      if (mine.length > 0) {
+        const others = new Set(
+          (
+            db
+              .prepare(
+                `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+                 JOIN run_items ri ON ri.id = s.run_item_id
+                 WHERE NOT ${scopeSql} AND s.mid = ? AND s.phrase_norm IN (${mine.map(() => '?').join(',')})`,
+              )
+              .all(kw.id, kw.text, kw.mid, kw.mid, ...mine) as Array<{ phrase_norm: string }>
+          ).map((r) => r.phrase_norm),
+        );
+        const toDel = mine.filter((p) => !others.has(p));
+        for (let i = 0; i < toDel.length; i += 500) {
+          const chunk = toDel.slice(i, i + 500);
+          purgedLex += db
+            .prepare(`DELETE FROM lexicon WHERE mid = ? AND phrase_norm IN (${chunk.map(() => '?').join(',')})`)
+            .run(kw.mid, ...chunk).changes;
+        }
+      }
+      // 2) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
+      db.prepare(
+        `DELETE FROM suggestions_raw
+         WHERE run_item_id IN (SELECT ri.id FROM run_items ri WHERE ${scopeSql})`,
+      ).run(kw.id, kw.text, kw.mid);
+      db.prepare(
+        'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
+      ).run(kw.id, kw.text, kw.mid);
+      db.prepare('DELETE FROM keywords WHERE id = ?').run(kw.id);
+      return purgedLex;
+    });
+    return tx();
+  }
+
   // ------------------------------------------------------------------ health
   app.get('/api/health', async () => ({ ok: true, version: config.version, time: nowIso() }));
 
@@ -116,13 +170,17 @@ export function registerApi(app: FastifyInstance): void {
   app.patch('/api/keywords/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const b = req.body as { status?: string; note?: string; text?: string; mid?: string; alias?: string };
+    // text / site / alias define the identity of the seed and its history & orphan re-attach
+    // key. Changing them silently would split or corrupt the trend timeline.
+    if (b.text !== undefined || b.mid !== undefined || b.alias !== undefined) {
+      return reply.code(400).send({
+        error: '关键词文本/站点/类目不可修改。请删除该关键词后重新添加相同文本+站点（历史会自动接回）。',
+      });
+    }
     const kw = db.prepare('SELECT id FROM keywords WHERE id = ?').get(id);
     if (!kw) return reply.code(404).send({ error: 'not found' });
     if (b.status) db.prepare('UPDATE keywords SET status = ? WHERE id = ?').run(b.status === 'active' ? 'active' : 'paused', id);
     if (b.note !== undefined) db.prepare('UPDATE keywords SET note = ? WHERE id = ?').run(b.note, id);
-    if (b.text) db.prepare('UPDATE keywords SET text = ? WHERE id = ?').run(b.text.trim(), id);
-    if (b.mid) db.prepare('UPDATE keywords SET mid = ? WHERE id = ?').run(b.mid, id);
-    if (b.alias) db.prepare('UPDATE keywords SET alias = ? WHERE id = ?').run(b.alias, id);
     return { ok: true };
   });
 
@@ -136,55 +194,7 @@ export function registerApi(app: FastifyInstance): void {
     if (!kw) return { ok: true, purged: 0 };
 
     if (purge) {
-      // scope = this keyword's snapshots, including orphaned rows from earlier deletions
-      // of the same text+site (they were created under a now-deleted keyword id).
-      const scopeSql =
-        `(ri.keyword_id = ? OR (ri.keyword_id IS NULL AND ri.keyword_text = ? COLLATE NOCASE AND ri.mid = ?))`;
-      const tx = db.transaction(() => {
-        // 1) lexicon: remove suggestions discovered under this seed, unless also
-        //    referenced by another keyword's history (shared words survive)
-        const mine = (
-          db
-            .prepare(
-              `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
-               JOIN run_items ri ON ri.id = s.run_item_id
-               WHERE ${scopeSql}`,
-            )
-            .all(id, kw.text, kw.mid) as Array<{ phrase_norm: string }>
-        ).map((r) => r.phrase_norm);
-        let purgedLex = 0;
-        if (mine.length > 0) {
-          const others = new Set(
-            (
-              db
-                .prepare(
-                  `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
-                   JOIN run_items ri ON ri.id = s.run_item_id
-                   WHERE NOT ${scopeSql} AND s.phrase_norm IN (${mine.map(() => '?').join(',')})`,
-                )
-                .all(id, kw.text, kw.mid, ...mine) as Array<{ phrase_norm: string }>
-            ).map((r) => r.phrase_norm),
-          );
-          const toDel = mine.filter((p) => !others.has(p));
-          for (let i = 0; i < toDel.length; i += 500) {
-            const chunk = toDel.slice(i, i + 500);
-            purgedLex += db
-              .prepare(`DELETE FROM lexicon WHERE phrase_norm IN (${chunk.map(() => '?').join(',')})`)
-              .run(...chunk).changes;
-          }
-        }
-        // 2) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
-        db.prepare(
-          `DELETE FROM suggestions_raw
-           WHERE run_item_id IN (SELECT ri.id FROM run_items ri WHERE ${scopeSql})`,
-        ).run(id, kw.text, kw.mid);
-        db.prepare(
-          'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
-        ).run(id, kw.text, kw.mid);
-        db.prepare('DELETE FROM keywords WHERE id = ?').run(id);
-        return purgedLex;
-      });
-      const purgedLex = tx();
+      const purgedLex = purgeKeyword(kw);
       return { ok: true, purged: 1, purged_lexicon: purgedLex };
     }
 
@@ -193,7 +203,7 @@ export function registerApi(app: FastifyInstance): void {
   });
 
   app.post('/api/keywords/batch', async (req, reply) => {
-    const b = req.body as { action?: string; ids?: number[] };
+    const b = req.body as { action?: string; ids?: number[]; purge?: boolean | number };
     const ids = (b.ids ?? []).map(Number).filter(Number.isFinite);
     if (!ids.length) return reply.code(400).send({ error: 'ids required' });
     const ph = ids.map(() => '?').join(',');
@@ -202,6 +212,14 @@ export function registerApi(app: FastifyInstance): void {
       const st = b.action === 'enable' ? 'active' : 'paused';
       affected = db.prepare(`UPDATE keywords SET status = ? WHERE id IN (${ph})`).run(st, ...ids).changes;
     } else if (b.action === 'delete') {
+      const rows = db
+        .prepare(`SELECT id, text, mid FROM keywords WHERE id IN (${ph})`)
+        .all(...ids) as Array<{ id: number; text: string; mid: string }>;
+      if (b.purge) {
+        let purgedLex = 0;
+        for (const kw of rows) purgedLex += purgeKeyword(kw);
+        return { ok: true, affected: rows.length, purged: rows.length, purged_lexicon: purgedLex };
+      }
       affected = db.prepare(`DELETE FROM keywords WHERE id IN (${ph})`).run(...ids).changes;
     } else {
       return reply.code(400).send({ error: 'invalid action, expect enable | pause | delete' });
@@ -315,7 +333,7 @@ export function registerApi(app: FastifyInstance): void {
   // --------------------------------------------------------------- api keys
   app.get('/api/keys', async () => {
     const rows = db
-      .prepare('SELECT id, name, key_prefix, active, credits_balance, can_live, live_daily_limit, created_at, last_used_at, revoked_at FROM api_keys ORDER BY id DESC')
+      .prepare('SELECT id, name, key_prefix, active, credits_balance, can_live, live_daily_limit, created_at, last_used_at, revoked_at, deleted_at FROM api_keys WHERE deleted_at IS NULL ORDER BY id DESC')
       .all() as Array<{ id: number; live_today?: number }>;
     for (const r of rows) r.live_today = countLiveCallsToday(r.id);
     return rows;
@@ -365,10 +383,14 @@ export function registerApi(app: FastifyInstance): void {
     return { ok: true };
   });
 
-  app.delete('/api/keys/:id', async (req) => {
+  app.delete('/api/keys/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    db.prepare('DELETE FROM api_keys WHERE id = ?').run(id); // ledger rows cascade
-    return { ok: true };
+    // soft delete: keep the key row so credits_ledger / api_calls audit history survives
+    const r = db
+      .prepare('UPDATE api_keys SET active=0, revoked_at=COALESCE(revoked_at, ?), deleted_at=? WHERE id=? AND deleted_at IS NULL')
+      .run(nowIso(), nowIso(), id);
+    if (!r.changes) return reply.code(404).send({ error: 'not found or already deleted' });
+    return { ok: true, soft_deleted: true };
   });
 
   app.post('/api/keys/:id/topup', async (req, reply) => {

@@ -62,6 +62,8 @@ function backoffDelay(attempt: number): number {
 interface TryContext {
   runItemId?: number | null;
   signal?: AbortSignal;
+  /** hard wall-clock budget for the whole retry chain (used by synchronous MCP calls) */
+  deadlineAt?: number;
 }
 
 async function fetchWithRetry(opts: FetchSuggestOptions, ctx: TryContext) {
@@ -74,8 +76,16 @@ async function fetchWithRetry(opts: FetchSuggestOptions, ctx: TryContext) {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     if (ctx.signal?.aborted) throw new CrawlerError('aborted', 'network');
+    const remaining = ctx.deadlineAt ? ctx.deadlineAt - Date.now() : Infinity;
+    if (remaining <= 300) {
+      throw new CrawlerError(
+        ctx.deadlineAt ? 'live fetch deadline exceeded' : 'deadline exceeded',
+        'network',
+      );
+    }
+    const perAttemptTimeout = Math.min(opts.timeoutMs ?? 15000, Number.isFinite(remaining) ? remaining : 15000);
     try {
-      const result = await fetchSuggestionsOnce({ ...opts, signal: ctx.signal });
+      const result = await fetchSuggestionsOnce({ ...opts, timeoutMs: perAttemptTimeout, signal: ctx.signal });
       insLog.run(ctx.runItemId ?? null, result.url, result.status, 1, result.latencyMs, attempt, result.body.slice(0, 65536), '');
       noteSuccess();
       return result;
@@ -98,7 +108,9 @@ async function fetchWithRetry(opts: FetchSuggestOptions, ctx: TryContext) {
         noteFailure();
         throw err;
       }
-      await sleep(backoffDelay(attempt));
+      const wait = backoffDelay(attempt);
+      const capped = ctx.deadlineAt ? Math.min(wait, Math.max(0, ctx.deadlineAt - Date.now())) : wait;
+      await sleep(capped);
     }
   }
   throw lastErr;
@@ -307,7 +319,11 @@ async function harvestKeyword(
   return { basicCount, expandCount, requestCount };
 }
 
-/** One-off live fetch used by MCP realtime tool (no persistence except fetch_log). */
-export async function liveFetch(opts: FetchSuggestOptions) {
-  return fetchWithRetry(opts, { runItemId: null });
+/** One-off live fetch used by MCP realtime tool (no persistence except fetch_log).
+ *  `deadlineMs` bounds the whole retry chain so a synchronous MCP call cannot outlive a gateway. */
+export async function liveFetch(opts: FetchSuggestOptions, deadlineMs?: number) {
+  return fetchWithRetry(opts, {
+    runItemId: null,
+    deadlineAt: deadlineMs && deadlineMs > 0 ? Date.now() + deadlineMs : undefined,
+  });
 }

@@ -15,7 +15,7 @@ body{font:14px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",san
 .nav a{display:flex;gap:8px;align-items:center;padding:9px 12px;border-radius:8px;color:#cdd5e1;text-decoration:none;margin-bottom:2px;font-size:13.5px}
 .nav a:hover{background:#1a2436;color:#fff}
 .nav a.on{background:var(--primary);color:#fff}
-.main{flex:1;padding:24px 28px;max-width:1400px;min-width:0}
+.main{flex:1;padding:24px 28px;min-width:0}
 .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
 .topbar h1{font-size:19px}
 .userbox{display:flex;gap:10px;align-items:center}

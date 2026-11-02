@@ -251,6 +251,12 @@ export function registerApi(app: FastifyInstance): void {
     return { ok: true };
   });
 
+  app.delete('/api/keys/:id', async (req) => {
+    const { id } = req.params as { id: string };
+    db.prepare('DELETE FROM api_keys WHERE id = ?').run(id); // ledger rows cascade
+    return { ok: true };
+  });
+
   app.post('/api/keys/:id/topup', async (req, reply) => {
     const { id } = req.params as { id: string };
     const b = req.body as { amount?: number; note?: string };

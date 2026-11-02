@@ -44,6 +44,17 @@ const App = {
   computed: {
     keywordOptions() { return this.kwList; },
     lexTotalPages() { return this.lexData ? Math.max(1, Math.ceil(this.lexData.total / 50)) : 1; },
+    mcpConfig() {
+      if (!this.newKey) return '';
+      return JSON.stringify({
+        mcpServers: {
+          'amz-lexicon': {
+            url: location.origin + '/mcp',
+            headers: { Authorization: 'Bearer ' + this.newKey.key },
+          },
+        },
+      }, null, 2);
+    },
   },
   async mounted() {
     window.addEventListener('hashchange', () => this.onRoute());
@@ -217,6 +228,12 @@ const App = {
     async revokeKey(k) {
       if (!confirm(`吊销 ${k.name}？使用该 key 的 agent 将立即失效。`)) return;
       await api('POST', `/api/keys/${k.id}/revoke`);
+      this.loadKeys();
+    },
+    async delKey(k) {
+      if (!confirm(`彻底删除「${k.name}」？其余额与 credits 流水将一并清除，不可恢复！建议先用「吊销」保留记录。`)) return;
+      await api('DELETE', '/api/keys/' + k.id);
+      this.notify('已删除');
       this.loadKeys();
     },
     async topupKey(k, current) {
@@ -504,6 +521,11 @@ const App = {
           <span class="mono" style="font-size:13px">{{newKey.key}}</span>
           <button class="btn sm" style="margin-left:8px" @click="copyText(newKey.key)">复制</button>
         </div>
+        <div v-if="newKey" style="margin-top:12px">
+          <h3 style="font-size:13px;margin-bottom:6px">MCP 客户端配置（粘贴到 agent 的 mcp 设置里）</h3>
+          <pre class="mono" style="white-space:pre-wrap;background:#0f172a;color:#93c5fd;padding:12px 14px;border-radius:8px;font-size:12px">{{mcpConfig}}</pre>
+          <button class="btn sm primary" @click="copyText(mcpConfig)">复制完整 MCP 配置</button>
+        </div>
       </div>
       <div class="card">
         <table v-if="keyList.length">
@@ -520,6 +542,7 @@ const App = {
                 <button class="btn sm" @click="topupKey(k,'充值')">充值</button>
                 <button class="btn sm" @click="showLedger(k)">流水</button>
                 <button v-if="k.active" class="btn sm danger" @click="revokeKey(k)">吊销</button>
+                <button class="btn sm danger" @click="delKey(k)">删除</button>
               </div></td>
             </tr>
           </tbody>

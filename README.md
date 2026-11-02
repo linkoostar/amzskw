@@ -57,7 +57,8 @@ npm run build && npm start
 | `cross_site_gap` | 两个站点的联想词差集（市场空白） | 3 |
 | `analyze_roots` | 词根/修饰词频率分析（卖点词、PPC 词包） | 5 |
 | `search_suggestions` | 实时抓基础联想（live，受管控） | 10 |
-| `search_suggestions_expand` | 实时 a-z 深度挖掘（live，较慢，受管控） | 30 |
+| `search_suggestions_expand` | 实时 a-z 深度挖掘（**异步**：立即返回 job_id，不占网关超时） | 30 |
+| `get_expand_job` | 轮询 expand 异步任务进度/结果 | 0 |
 
 价格在「系统设置」页可调；余额不足返回 `insufficient credits` 错误；每 key 每分钟限流可配。
 

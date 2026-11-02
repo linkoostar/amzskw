@@ -24,6 +24,86 @@ function errorResult(message: string) {
 
 class McpToolError extends Error {}
 
+// ---------------------------------------------------------------- expand jobs (async deep-mining)
+interface ExpandJob {
+  id: string;
+  keyId: number;
+  clientId: string;
+  args: { keyword: string; mid?: string; alias?: string; limit?: number; expand_top?: number; letters?: string };
+  status: 'running' | 'done' | 'error';
+  progress: { done: number; total: number };
+  started_at: string;
+  finished_at?: string;
+  result?: unknown;
+  error?: string;
+}
+const expandJobs = new Map<string, ExpandJob>();
+const EXPAND_JOB_TTL_MS = 3600_000;
+
+function pruneExpandJobs(): void {
+  const now = Date.now();
+  for (const [id, j] of expandJobs) {
+    if (j.status !== 'running' && j.finished_at && now - Date.parse(j.finished_at) > EXPAND_JOB_TTL_MS) expandJobs.delete(id);
+  }
+}
+
+async function runExpandJob(job: ExpandJob): Promise<void> {
+  const a = job.args;
+  try {
+    const mid = a.mid ?? 'ATVPDKIKX0DER';
+    const alias = a.alias ?? 'aps';
+    const limit = Math.min(30, Math.max(1, a.limit ?? 15));
+    const rawBodies: string[] = [];
+    const basic = await liveFetch({ prefix: a.keyword, mid, alias, limit });
+    rawBodies.push(basic.body);
+    const baseWords = basic.suggestions.map((s) => s.value);
+    const expandTop = Math.min(10, Math.max(0, a.expand_top ?? getSettingNum('expand_top')));
+    const letters = (a.letters ?? (getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz')).split('');
+    job.progress.total = Math.max(1, expandTop * letters.length);
+    const expanded: Array<{ parent: string; letter: string; phrase: string; position: number }> = [];
+    const seen = new Set(baseWords.map((w) => w.toLowerCase()));
+    for (const baseWord of baseWords.slice(0, expandTop)) {
+      for (const letter of letters) {
+        await randomRequestGap();
+        try {
+          const res = await liveFetch({ prefix: `${baseWord} ${letter}`, mid, alias, limit });
+          rawBodies.push(res.body);
+          res.suggestions.forEach((s, i) => {
+            const n = s.value.toLowerCase();
+            if (seen.has(n)) return;
+            seen.add(n);
+            expanded.push({ parent: baseWord, letter, phrase: s.value, position: i + 1 });
+          });
+        } catch {
+          // keep going on single-letter failure
+        }
+        job.progress.done++;
+      }
+    }
+    const allPhrases = [...baseWords, ...expanded.map((e) => e.phrase)];
+    const { stored, autoSeedCreated } = persistLiveResults(mid, a.keyword, allPhrases, rawBodies, job.clientId);
+    job.result = {
+      keyword: a.keyword,
+      mid,
+      basic: baseWords,
+      expanded,
+      total_unique: seen.size,
+      persisted_to_lexicon: stored,
+      auto_seed_created: autoSeedCreated,
+      auto_seed_note: autoSeedCreated
+        ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
+        : undefined,
+      fetched_at: new Date().toISOString(),
+    };
+    job.status = 'done';
+  } catch (e) {
+    job.status = 'error';
+    job.error = (e as Error).message ?? String(e);
+  } finally {
+    job.finished_at = new Date().toISOString();
+  }
+}
+
 /** Guard for LIVE Amazon tools: caller identity, per-key switch, per-key daily quota, global daily cap. */
 function liveGuard(key: ApiKeyRow, clientId: string): void {
   if (!clientId) {
@@ -234,17 +314,18 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
     'search_suggestions_expand',
     {
       description:
-        'LIVE deep-mining: fetches basic suggestions, then re-queries base words + letters to expand the pool ("alphabet soup"). ' +
-        'Makes many paced requests; can take minutes (keep letters/expand_top small). Charged at a higher rate. ' +
-        'GOVERNANCE: subject to per-key daily live quota and a server-wide daily cap; when persistence is enabled all discovered ' +
-        'phrases are merged into the lexicon (visible via lookup_lexicon) and raw responses are archived for audit.',
+        'ASYNCHRONOUS deep-mining of Amazon suggestions ("alphabet soup"): starts a background job and returns a job_id IMMEDIATELY ' +
+        '(fits any gateway timeout). The job fetches basic suggestions, then re-queries base words + letters — a full run can take ' +
+        'minutes (130+ paced requests). Poll get_expand_job with the job_id until status="done" to retrieve results. ' +
+        'GOVERNANCE: requires X-Client-Id; subject to per-key daily live quota and server-wide cap; credits charged at start; ' +
+        'all discovered phrases are merged into the lexicon when persistence is enabled.',
       inputSchema: {
         keyword: z.string().describe('Seed keyword'),
         mid: z.string().optional().describe('Marketplace id, defaults to US'),
         alias: z.string().optional().default('aps'),
         limit: z.number().optional().default(15).describe('Per-request max suggestions (1-30)'),
         expand_top: z.number().optional().default(5).describe('How many base words to expand (max 10)'),
-        letters: z.string().optional().describe('Letters to append, defaults to a-z. Use a short set like "ab" to keep it fast.'),
+        letters: z.string().optional().describe('Letters to append, defaults to a-z. Use a short set like "ab" for a quick run.'),
       },
     },
     billable(
@@ -253,51 +334,59 @@ function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
       'search_suggestions_expand',
       async (args: { keyword: string; mid?: string; alias?: string; limit?: number; expand_top?: number; letters?: string }) => {
         liveGuard(key, clientId);
-        const mid = args.mid ?? 'ATVPDKIKX0DER';
-        const alias = args.alias ?? 'aps';
-        const limit = Math.min(30, Math.max(1, args.limit ?? 15));
-        const rawBodies: string[] = [];
-        const basic = await liveFetch({ prefix: args.keyword, mid, alias, limit });
-        rawBodies.push(basic.body);
-        const baseWords = basic.suggestions.map((s) => s.value);
-        const expandTop = Math.min(10, Math.max(0, args.expand_top ?? getSettingNum('expand_top')));
-        const letters = (args.letters ?? (getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz')).split('');
-        const expanded: Array<{ parent: string; letter: string; phrase: string; position: number }> = [];
-        const seen = new Set(baseWords.map((w) => w.toLowerCase()));
-        for (const baseWord of baseWords.slice(0, expandTop)) {
-          for (const letter of letters) {
-            await randomRequestGap();
-            try {
-              const res = await liveFetch({ prefix: `${baseWord} ${letter}`, mid, alias, limit });
-              rawBodies.push(res.body);
-              res.suggestions.forEach((s, i) => {
-                const n = s.value.toLowerCase();
-                if (seen.has(n)) return;
-                seen.add(n);
-                expanded.push({ parent: baseWord, letter, phrase: s.value, position: i + 1 });
-              });
-            } catch {
-              // keep going on single-letter failure
-            }
-          }
+        pruneExpandJobs();
+        const running = [...expandJobs.values()].filter((j) => j.status === 'running').length;
+        if (running >= 2) {
+          throw new McpToolError('another expand job is still running (max 2 concurrent server-wide). Poll its job_id with get_expand_job and try again later.');
         }
-        const allPhrases = [...baseWords, ...expanded.map((e) => e.phrase)];
-        const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, allPhrases, rawBodies, clientId);
+        const id = `exp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        const job: ExpandJob = {
+          id, keyId: key.id, clientId,
+          args,
+          status: 'running',
+          progress: { done: 0, total: 1 },
+          started_at: new Date().toISOString(),
+        };
+        expandJobs.set(id, job);
+        void runExpandJob(job);
+        const est = Math.min(10, Math.max(0, args.expand_top ?? getSettingNum('expand_top')))
+          * (args.letters ?? (getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz')).length;
         return {
-          keyword: args.keyword,
-          mid,
-          basic: baseWords,
-          expanded,
-          total_unique: seen.size,
-          persisted_to_lexicon: stored,
-          auto_seed_created: autoSeedCreated,
-          auto_seed_note: autoSeedCreated
-            ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
-            : undefined,
-          fetched_at: new Date().toISOString(),
+          job_id: id,
+          status: 'running',
+          estimated_requests: est,
+          how_to_get_results: 'poll tool get_expand_job with {"job_id": "' + id + '"} every 10-20 seconds until status is "done"',
+          note: 'credits were charged at start; the job keeps running server-side even if you disconnect',
         };
       },
     ),
+  );
+
+  server.registerTool(
+    'get_expand_job',
+    {
+      description:
+        'Poll the status/result of an asynchronous search_suggestions_expand job. Free of charge. ' +
+        'Returns progress (done/total requests) while running; the full mined suggestion set once status="done". ' +
+        'Jobs are kept for 1 hour after completion and are lost if the server restarts.',
+      inputSchema: {
+        job_id: z.string().describe('The job_id returned by search_suggestions_expand'),
+      },
+    },
+    billable(key, clientId, 'get_expand_job', async (args: { job_id: string }) => {
+      const job = expandJobs.get(args.job_id);
+      if (!job || job.keyId !== key.id) {
+        throw new McpToolError(`expand job not found: "${args.job_id}". It may have expired (1h after completion) or was started by a different API key.`);
+      }
+      const elapsedS = Math.round((Date.now() - Date.parse(job.started_at)) / 1000);
+      if (job.status === 'running') {
+        return { job_id: job.id, status: 'running', progress: job.progress, elapsed_seconds: elapsedS, hint: 'poll again in 10-20 seconds' };
+      }
+      if (job.status === 'error') {
+        return { job_id: job.id, status: 'error', elapsed_seconds: elapsedS, error: job.error };
+      }
+      return { job_id: job.id, status: 'done', elapsed_seconds: elapsedS, result: job.result };
+    }),
   );
 
   // ------------------------------------------------------------ analysis tools

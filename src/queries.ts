@@ -82,6 +82,22 @@ export interface TrendMatrix {
   }>;
 }
 
+/**
+ * Re-link orphaned run history (keyword_id set to NULL when a keyword was deleted)
+ * to a newly created keyword with the same text + site. run_items stores keyword_text
+ * snapshots, so deleted keywords' history survives and can be reattached on re-add.
+ * Returns the number of reattached history rows.
+ */
+export function reattachOrphanHistory(text: string, mid: string, newKeywordId: number): number {
+  const db = getDb();
+  return db
+    .prepare(
+      `UPDATE run_items SET keyword_id = ?
+       WHERE keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?`,
+    )
+    .run(newKeywordId, text, mid).changes;
+}
+
 export function getTrendMatrix(keywordId: number, runsLimit = 12): TrendMatrix | null {
   const db = getDb();
   const kw = db.prepare('SELECT id, text, mid FROM keywords WHERE id = ?').get(keywordId) as

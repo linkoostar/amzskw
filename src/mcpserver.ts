@@ -8,7 +8,7 @@ import {
   logApiCall, countLiveCallsToday,
 } from './credits.js';
 import { liveFetch, randomRequestGap } from './crawler.js';
-import { getStats, searchLexicon, getTrendMatrix } from './queries.js';
+import { getStats, searchLexicon, getTrendMatrix, reattachOrphanHistory } from './queries.js';
 import { getDb, getSettingNum, getSetting } from './db.js';
 import { normalizePhrase, nowIso } from './util.js';
 import { config } from './config.js';
@@ -162,7 +162,9 @@ function persistLiveResults(mid: string, seedKeyword: string, phrases: string[],
         const mx = getSettingNum('live_seed_max_words') || 5;
         if (wc >= mn && wc <= mx) {
           const note = `auto: live fetch via MCP${clientId ? ` (${clientId})` : ''} — paused, review before enabling`;
-          autoSeedCreated = insKw.run(seedKeyword.trim(), mid, note).changes > 0;
+          const r = insKw.run(seedKeyword.trim(), mid, note);
+          autoSeedCreated = r.changes > 0;
+          if (autoSeedCreated) reattachOrphanHistory(seedKeyword.trim(), mid, Number(r.lastInsertRowid));
         }
       }
     });

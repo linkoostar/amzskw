@@ -34,15 +34,22 @@ function runMigrations(db: DB): void {
     .readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
     .sort();
-  for (const f of files) {
-    if (applied.has(f)) continue;
-    const sql = fs.readFileSync(path.join(dir, f), 'utf8');
-    const tx = db.transaction(() => {
-      db.exec(sql);
-      db.prepare('INSERT INTO _migrations(name, applied_at) VALUES (?, ?)').run(f, nowIso());
-    });
-    tx();
-    console.log(`[db] migration applied: ${f}`);
+  // schema rebuilds (table re-creation) need FK enforcement off; PRAGMA is a no-op inside a
+  // transaction, so toggle around the whole migration window and restore afterwards.
+  db.pragma('foreign_keys = OFF');
+  try {
+    for (const f of files) {
+      if (applied.has(f)) continue;
+      const sql = fs.readFileSync(path.join(dir, f), 'utf8');
+      const tx = db.transaction(() => {
+        db.exec(sql);
+        db.prepare('INSERT INTO _migrations(name, applied_at) VALUES (?, ?)').run(f, nowIso());
+      });
+      tx();
+      console.log(`[db] migration applied: ${f}`);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
   }
 }
 

@@ -151,8 +151,9 @@ const App = {
       this.loadKeywords();
     },
     async delKw(kw) {
-      if (!confirm(`删除关键词「${kw.text}」？历史数据将保留在词库，但不再继续追踪。`)) return;
+      if (!confirm(`删除关键词「${kw.text}」？\n\n· 词库与抓取历史会保留；\n· 重新添加同名关键词（同站点）时历史自动接回；\n· 只想停每周抓取请用「暂停」。`)) return;
       await api('DELETE', '/api/keywords/' + kw.id);
+      this.notify('已删除（历史已保留，重加自动接回）');
       this.loadKeywords();
     },
     async fetchKw(kw) {

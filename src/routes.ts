@@ -4,6 +4,7 @@ import { checkAdminPassword, createAdminSession, destroyAdminSession, SESSION_CO
 import { startRun, cancelRun, breakerState, liveFetch } from './crawler.js';
 import { getStats, getKeywordSnapshot, getTrendMatrix, searchLexicon } from './queries.js';
 import { addCredits, countLiveCallsToday } from './credits.js';
+import { reattachOrphanHistory } from './queries.js';
 import { reloadScheduler, schedulerStatus } from './scheduler.js';
 import { config } from './config.js';
 import { csvEscape, nowIso, randomToken, sha256hex } from './util.js';
@@ -73,7 +74,8 @@ export function registerApi(app: FastifyInstance): void {
       const id = db
         .prepare('INSERT INTO keywords(text, mid, alias, note) VALUES (?, ?, ?, ?)')
         .run(text, mid, alias, b.note ?? '').lastInsertRowid;
-      return { id };
+      const reattached = reattachOrphanHistory(text, mid, Number(id));
+      return { id, reattached_history: reattached };
     } catch (e) {
       return reply.code(409).send({ error: '关键词已存在（相同站点/类目）' });
     }
@@ -89,16 +91,19 @@ export function registerApi(app: FastifyInstance): void {
     const mid = b.mid || 'ATVPDKIKX0DER';
     const alias = b.alias || 'aps';
     const ins = db.prepare('INSERT OR IGNORE INTO keywords(text, mid, alias) VALUES (?, ?, ?)');
+    const attach = (text: string, id: number) => reattachOrphanHistory(text, mid, id);
     const tx = db.transaction(() => {
       let added = 0;
+      let reattached = 0;
       for (const line of lines) {
         const r = ins.run(line, mid, alias);
         added += r.changes;
+        if (r.changes > 0 && r.lastInsertRowid) reattached += attach(line, Number(r.lastInsertRowid));
       }
-      return added;
+      return { added, reattached };
     });
-    const added = tx();
-    return { added, skipped: lines.length - added };
+    const { added, reattached } = tx();
+    return { added, skipped: lines.length - added, reattached_history: reattached };
   });
 
   app.patch('/api/keywords/:id', async (req, reply) => {

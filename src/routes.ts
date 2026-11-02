@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { getDb, getAllSettings, setSetting, getSetting } from './db.js';
 import { checkAdminPassword, createAdminSession, destroyAdminSession, SESSION_COOKIE, validateAdminSession, changeAdminPassword } from './auth.js';
-import { startRun, cancelRun, breakerState, liveFetch } from './crawler.js';
+import { startRun, cancelRun, isRunActive, breakerState, liveFetch } from './crawler.js';
 import { getStats, getKeywordSnapshot, getTrendMatrix, searchLexicon } from './queries.js';
 import { addCredits, countLiveCallsToday } from './credits.js';
 import { reattachOrphanHistory } from './queries.js';
@@ -354,6 +354,28 @@ export function registerApi(app: FastifyInstance): void {
     const { id } = req.params as { id: string };
     const ok = cancelRun(Number(id));
     return { ok };
+  });
+
+  app.delete('/api/runs/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const runId = Number(id);
+    const run = db.prepare('SELECT id, status FROM runs WHERE id = ?').get(runId) as
+      | { id: number; status: string }
+      | undefined;
+    if (!run) return reply.code(404).send({ error: '任务不存在' });
+    // the background worker still holds this run id and would keep writing run_items,
+    // so refuse until it has fully stopped (cancel first, then delete once it settles)
+    if (run.status === 'running' || run.status === 'pending' || isRunActive(runId)) {
+      return reply.code(409).send({ error: '任务仍在运行或收尾，请先取消并等待结束后再删除' });
+    }
+    const tx = db.transaction(() => {
+      // fetch_log has no foreign key to run_items, clean it explicitly
+      db.prepare('DELETE FROM fetch_log WHERE run_item_id IN (SELECT id FROM run_items WHERE run_id = ?)').run(runId);
+      // run_items and suggestions_raw are removed by ON DELETE CASCADE
+      db.prepare('DELETE FROM runs WHERE id = ?').run(runId);
+    });
+    tx();
+    return { ok: true, deleted: runId };
   });
 
   // ------------------------------------------------------------------ trends

@@ -130,6 +130,11 @@ export interface RunHandle {
 
 const activeRuns = new Map<number, AbortController>();
 
+/** true while the background worker is still alive (even right after a cancel). */
+export function isRunActive(runId: number): boolean {
+  return activeRuns.has(runId);
+}
+
 export function cancelRun(runId: number): boolean {
   const c = activeRuns.get(runId);
   if (!c) return false;

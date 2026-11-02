@@ -230,6 +230,15 @@ const App = {
       this.notify(`任务 #${run.id} 已请求取消`);
       this.loadRuns();
     },
+    async delRun(run) {
+      if (!confirm(`删除任务 #${run.id}（${run.trigger_type === 'weekly' ? '周调度' : '手动'}，${run.status}）？\n\n将删除该批次的任务明细与原始响应快照；已积累的词库数据不受影响。此操作不可恢复。`)) return;
+      try {
+        await api('DELETE', '/api/runs/' + run.id);
+        if (this.modal && this.modal.type === 'run' && this.modal.run.id === run.id) this.closeModal();
+        this.notify(`任务 #${run.id} 已删除`);
+        this.loadRuns();
+      } catch (e) { this.handleErr(e); }
+    },
     runStatusTag(s) {
       return { done: 'green', running: 'blue', pending: 'gray', failed: 'red', cancelled: 'amber', skipped: 'gray' }[s] || 'gray';
     },
@@ -565,6 +574,7 @@ const App = {
               <td><div class="row" style="flex-wrap:nowrap">
                 <button class="btn sm" @click="showRun(r)">详情</button>
                 <button v-if="r.status==='running'||r.status==='pending'" class="btn sm danger" @click="cancelRun(r)">取消</button>
+                <button v-else class="btn sm danger" @click="delRun(r)">删除</button>
               </div></td>
             </tr>
           </tbody>

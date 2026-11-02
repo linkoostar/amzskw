@@ -51,6 +51,7 @@ const App = {
     if (this.authed) this.onRoute(true);
   },
   methods: {
+    fmtDate, esc,
     nav(r) { location.hash = '#' + r; },
     onRoute(force) {
       if (!this.authed) return;
@@ -127,8 +128,13 @@ const App = {
     },
     async showSnapshot(kw) {
       this.modal = { type: 'snapshot', title: `快照 — ${kw.text} (${this.siteFlag(kw.mid)})`, snap: null };
-      try { this.modal = { type: 'snapshot', title: `快照 — ${kw.text} (${this.siteFlag(kw.mid)})`, snap: await api('GET', `/api/keywords/${kw.id}/snapshot`) }; }
-      catch (e) { this.handleErr(e); this.closeModal(); }
+      try {
+        const r = await api('GET', `/api/keywords/${kw.id}/snapshot`);
+        this.modal = {
+          type: 'snapshot', title: `快照 — ${kw.text} (${this.siteFlag(kw.mid)})`,
+          snap: r.snapshot ? { fetched_at: r.snapshot.fetched_at, basic: r.snapshot.basic, expand: r.snapshot.expand } : null,
+        };
+      } catch (e) { this.handleErr(e); this.closeModal(); }
     },
 
     // ---------------------------------------------------------------- runs

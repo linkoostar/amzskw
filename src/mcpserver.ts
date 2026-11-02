@@ -146,6 +146,11 @@ function persistLiveResults(mid: string, seedKeyword: string, phrases: string[],
        VALUES (?, ?, ?, ?, ?, 1)
        ON CONFLICT(mid, phrase_norm) DO UPDATE SET seen_count = seen_count + 1, last_seen_at = excluded.last_seen_at`,
     );
+    const upSource = db.prepare(
+      `INSERT INTO lexicon_sources(mid, phrase_norm, seed_text, source, last_seen_at)
+       VALUES (?, ?, ?, 'live', ?)
+       ON CONFLICT(mid, phrase_norm, seed_text, source) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+    );
     const insKw = db.prepare(
       "INSERT OR IGNORE INTO keywords(text, mid, alias, status, note, source) VALUES (?, ?, 'aps', 'paused', ?, 'mcp-live')",
     );
@@ -155,7 +160,9 @@ function persistLiveResults(mid: string, seedKeyword: string, phrases: string[],
         const norm = normalizePhrase(p);
         if (!norm || seen.has(norm)) continue;
         seen.add(norm);
-        up.run(mid, norm, p.trim(), nowIso(), nowIso());
+        const ts = nowIso();
+        up.run(mid, norm, p.trim(), ts, ts);
+        upSource.run(mid, norm, seedKeyword.trim(), ts);
         stored++;
       }
       for (const raw of rawBodies) {

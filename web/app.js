@@ -285,6 +285,19 @@ const App = {
       this.lexPage = p - 1;
       this.loadLexicon();
     },
+    async purgeSeedLexicon() {
+      const text = prompt('输入已删除的种子词（精确匹配，不是搜索子串）：', this.lexQuery);
+      if (text === null) return;
+      const seed = text.trim();
+      if (!seed) return;
+      if (!this.lexMid) { this.notify('请先在站点下拉框选择站点，再清理残留词库'); return; }
+      if (!confirm(`清理种子词「${seed}」的残留联想词？\n\n· 仅删除只由该种子词发现的联想词；\n· 同时被其他种子词发现的会保留；\n· 不可恢复（不会删除关键词与抓取历史）。`)) return;
+      try {
+        const r = await api('POST', '/api/lexicon/purge-seed', { text: seed, mid: this.lexMid });
+        this.notify(`已清理 ${r.purged_lexicon} 条联想词`);
+        this.loadLexicon();
+      } catch (e) { this.handleErr(e); }
+    },
 
     // ---------------------------------------------------------------- keys
     async loadKeys() { try { this.keyList = await api('GET', '/api/keys'); } catch (e) { this.handleErr(e); } },
@@ -575,6 +588,7 @@ const App = {
           <input v-model="lexQuery" placeholder="搜索词库，如 starlink" style="flex:1" @keyup.enter="lexPage=0;loadLexicon()">
           <select v-model="lexMid"><option value="">全部站点</option><option v-for="s in sites" :value="s.mid">{{s.flag}} {{s.name}}</option></select>
           <button class="btn primary" @click="lexPage=0;loadLexicon()">搜索</button>
+          <button class="btn sm danger" @click="purgeSeedLexicon" title="清理已删除关键词残留的联想词">清理残留</button>
         </div>
         <p class="muted" style="margin-top:8px">词库 = 所有种子词历次抓取发现的联想词去重合集，记录首次/最近收录时间与出现次数。</p>
       </div>

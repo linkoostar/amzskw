@@ -12,39 +12,60 @@ import { csvEscape, nowIso, randomToken, sha256hex } from './util.js';
 export function registerApi(app: FastifyInstance): void {
   const db = getDb();
 
-  /** Permanently remove one keyword plus the lexicon entries it discovered and its
-   *  full harvest history. Shared by single delete (?purge=1) and batch delete. */
-  function purgeKeyword(kw: { id: number; text: string; mid: string }): number {
+  /** Permanently remove a seed plus the lexicon entries it discovered and its full
+   *  harvest history. `id = null` cleans residue of a keyword that no longer exists.
+   *  Works for both scheduled snapshots and live MCP fetches (via lexicon_sources). */
+  function purgeSeed(kw: { id: number | null; text: string; mid: string }, dropHistory = true): number {
     // scope = this keyword's snapshots, including orphaned rows from earlier deletions
     // of the same text+site (they were created under a now-deleted keyword id).
     const scopeSql =
       `(ri.keyword_id = ? OR (ri.keyword_id IS NULL AND ri.keyword_text = ? COLLATE NOCASE AND ri.mid = ?))`;
+    const idArg = kw.id ?? -1;
     const tx = db.transaction(() => {
-      // 1) lexicon: remove suggestions discovered under this seed, unless also
-      //    referenced by another keyword's history (shared words survive)
-      const mine = (
-        db
-          .prepare(
-            `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
-             JOIN run_items ri ON ri.id = s.run_item_id
-             WHERE ${scopeSql}`,
-          )
-          .all(kw.id, kw.text, kw.mid) as Array<{ phrase_norm: string }>
-      ).map((r) => r.phrase_norm);
+      // 1) phrases this seed ever contributed: harvest snapshots + provenance rows
+      const mine = new Set<string>();
+      for (const r of db
+        .prepare(
+          `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+           JOIN run_items ri ON ri.id = s.run_item_id
+           WHERE ${scopeSql}`,
+        )
+        .all(idArg, kw.text, kw.mid) as Array<{ phrase_norm: string }>) {
+        mine.add(r.phrase_norm);
+      }
+      for (const r of db
+        .prepare('SELECT DISTINCT phrase_norm FROM lexicon_sources WHERE mid = ? AND seed_text = ?')
+        .all(kw.mid, kw.text) as Array<{ phrase_norm: string }>) {
+        mine.add(r.phrase_norm);
+      }
+
       let purgedLex = 0;
-      if (mine.length > 0) {
-        const others = new Set(
-          (
-            db
-              .prepare(
-                `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
-                 JOIN run_items ri ON ri.id = s.run_item_id
-                 WHERE NOT ${scopeSql} AND s.mid = ? AND s.phrase_norm IN (${mine.map(() => '?').join(',')})`,
-              )
-              .all(kw.id, kw.text, kw.mid, kw.mid, ...mine) as Array<{ phrase_norm: string }>
-          ).map((r) => r.phrase_norm),
-        );
-        const toDel = mine.filter((p) => !others.has(p));
+      if (mine.size > 0) {
+        const candidates = [...mine];
+        // phrases also discovered by another seed (raw history or provenance) survive
+        const others = new Set<string>();
+        for (let i = 0; i < candidates.length; i += 500) {
+          const chunk = candidates.slice(i, i + 500);
+          const ph = chunk.map(() => '?').join(',');
+          for (const r of db
+            .prepare(
+              `SELECT DISTINCT s.phrase_norm FROM suggestions_raw s
+               JOIN run_items ri ON ri.id = s.run_item_id
+               WHERE NOT ${scopeSql} AND s.mid = ? AND s.phrase_norm IN (${ph})`,
+            )
+            .all(idArg, kw.text, kw.mid, kw.mid, ...chunk) as Array<{ phrase_norm: string }>) {
+            others.add(r.phrase_norm);
+          }
+          for (const r of db
+            .prepare(
+              `SELECT DISTINCT phrase_norm FROM lexicon_sources
+               WHERE mid = ? AND seed_text <> ? AND phrase_norm IN (${ph})`,
+            )
+            .all(kw.mid, kw.text, ...chunk) as Array<{ phrase_norm: string }>) {
+            others.add(r.phrase_norm);
+          }
+        }
+        const toDel = candidates.filter((p) => !others.has(p));
         for (let i = 0; i < toDel.length; i += 500) {
           const chunk = toDel.slice(i, i + 500);
           purgedLex += db
@@ -52,15 +73,19 @@ export function registerApi(app: FastifyInstance): void {
             .run(kw.mid, ...chunk).changes;
         }
       }
-      // 2) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
-      db.prepare(
-        `DELETE FROM suggestions_raw
-         WHERE run_item_id IN (SELECT ri.id FROM run_items ri WHERE ${scopeSql})`,
-      ).run(kw.id, kw.text, kw.mid);
-      db.prepare(
-        'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
-      ).run(kw.id, kw.text, kw.mid);
-      db.prepare('DELETE FROM keywords WHERE id = ?').run(kw.id);
+      // 2) provenance: forget this seed
+      db.prepare('DELETE FROM lexicon_sources WHERE mid = ? AND seed_text = ?').run(kw.mid, kw.text);
+      if (dropHistory) {
+        // 3) history: this keyword's snapshots + orphaned rows from earlier deletions of same text
+        db.prepare(
+          `DELETE FROM suggestions_raw
+           WHERE run_item_id IN (SELECT ri.id FROM run_items ri WHERE ${scopeSql})`,
+        ).run(idArg, kw.text, kw.mid);
+        db.prepare(
+          'DELETE FROM run_items WHERE keyword_id = ? OR (keyword_id IS NULL AND keyword_text = ? COLLATE NOCASE AND mid = ?)',
+        ).run(idArg, kw.text, kw.mid);
+        if (kw.id !== null) db.prepare('DELETE FROM keywords WHERE id = ?').run(kw.id);
+      }
       return purgedLex;
     });
     return tx();
@@ -194,7 +219,7 @@ export function registerApi(app: FastifyInstance): void {
     if (!kw) return { ok: true, purged: 0 };
 
     if (purge) {
-      const purgedLex = purgeKeyword(kw);
+      const purgedLex = purgeSeed(kw);
       return { ok: true, purged: 1, purged_lexicon: purgedLex };
     }
 
@@ -217,7 +242,7 @@ export function registerApi(app: FastifyInstance): void {
         .all(...ids) as Array<{ id: number; text: string; mid: string }>;
       if (b.purge) {
         let purgedLex = 0;
-        for (const kw of rows) purgedLex += purgeKeyword(kw);
+        for (const kw of rows) purgedLex += purgeSeed(kw);
         return { ok: true, affected: rows.length, purged: rows.length, purged_lexicon: purgedLex };
       }
       affected = db.prepare(`DELETE FROM keywords WHERE id IN (${ph})`).run(...ids).changes;
@@ -225,6 +250,23 @@ export function registerApi(app: FastifyInstance): void {
       return reply.code(400).send({ error: 'invalid action, expect enable | pause | delete' });
     }
     return { ok: true, affected };
+  });
+
+  // clean up lexicon residue left by a seed that was already deleted (e.g. live-fetched
+  // words written before provenance tracking existed). Shared phrases are kept.
+  app.post('/api/lexicon/purge-seed', async (req, reply) => {
+    const b = (req.body ?? {}) as { text?: string; mid?: string };
+    const text = (b.text ?? '').trim();
+    const mid = b.mid || 'ATVPDKIKX0DER';
+    if (!text) return reply.code(400).send({ error: '关键词不能为空' });
+    const kw = db
+      .prepare('SELECT id, text, mid FROM keywords WHERE text = ? COLLATE NOCASE AND mid = ?')
+      .get(text, mid) as { id: number; text: string; mid: string } | undefined;
+    if (kw) {
+      return reply.code(409).send({ error: '该关键词仍存在，请在关键词管理中使用「删除并彻底清除」' });
+    }
+    const purged = purgeSeed({ id: null, text, mid }, false);
+    return { ok: true, purged_lexicon: purged };
   });
 
   // ------------------------------------------------------- keyword snapshot

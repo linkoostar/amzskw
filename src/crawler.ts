@@ -251,6 +251,11 @@ async function harvestKeyword(
        last_seen_at = excluded.last_seen_at,
        seen_count = lexicon.seen_count + 1`,
   );
+  const upsertSource = db.prepare(
+    `INSERT INTO lexicon_sources(mid, phrase_norm, seed_text, source, last_seen_at)
+     VALUES (?, ?, ?, 'schedule', ?)
+     ON CONFLICT(mid, phrase_norm, seed_text, source) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+  );
 
   const store = (
     phrase: string,
@@ -266,7 +271,10 @@ async function harvestKeyword(
       item.id, kw.id, kw.mid, phrase, normalizePhrase(phrase), sourceType, parent, letter,
       position, strategyId ?? '', suggType ?? '', JSON.stringify(raw ?? {}),
     );
-    upsertLex.run(kw.mid, normalizePhrase(phrase), phrase, nowIso(), kw.id, nowIso());
+    const norm = normalizePhrase(phrase);
+    const ts = nowIso();
+    upsertLex.run(kw.mid, norm, phrase, ts, kw.id, ts);
+    upsertSource.run(kw.mid, norm, kw.text, ts);
   };
 
   // --- 1. basic snapshot ---

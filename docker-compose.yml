@@ -1,0 +1,14 @@
+services:
+  amz-lexicon:
+    build: .
+    container_name: amz-lexicon
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMIN_PASSWORD=admin123          # 改掉！
+      - DB_PATH=/data/amz.db
+      - TZ=Asia/Shanghai
+      # - HTTPS_PROXY=http://host.docker.internal:7890   # 国内网络访问亚马逊需代理时取消注释
+    volumes:
+      - ./data:/data

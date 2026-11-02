@@ -155,11 +155,15 @@ export function startRun(
   const runId = db.prepare('INSERT INTO runs(trigger_type, status) VALUES (?, ?)').run(triggerType, 'pending').lastInsertRowid as number;
 
   const insItem = db.prepare(
-    'INSERT INTO run_items(run_id, keyword_id, keyword_text, mid, status) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO run_items(run_id, keyword_id, keyword_text, mid, status, expected_requests) VALUES (?, ?, ?, ?, ?, ?)',
   );
+  // plan the request budget up-front so the UI can show "request N / total" immediately
+  const expandTop = Math.max(0, getSettingNum('expand_top'));
+  const lettersLen = (getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz').length;
+  const requestsPerKeyword = 1 + (expandTop > 0 ? expandTop * lettersLen : 0);
   // shuffle keyword order to look less regular
   for (const kw of shuffle(kws as Array<{ id: number; text: string; mid: string; alias: string }>)) {
-    insItem.run(runId, kw.id, kw.text, kw.mid, 'pending');
+    insItem.run(runId, kw.id, kw.text, kw.mid, 'pending', requestsPerKeyword);
   }
   db.prepare('UPDATE runs SET total_keywords = ? WHERE id = ?').run(kws.length, runId);
 
@@ -203,7 +207,7 @@ async function processRun(runId: number, controller: AbortController): Promise<v
     } catch (err) {
       const aborted = signal.aborted || (err as CrawlerError).message === 'aborted';
       db.prepare(
-        "UPDATE run_items SET status=?, error=?, finished_at=? WHERE id=?",
+        "UPDATE run_items SET status=?, error=?, expected_requests = done_requests, finished_at=? WHERE id=?",
       ).run(aborted ? 'skipped' : 'failed', String((err as Error).message ?? err).slice(0, 500), nowIso(), item.id);
       if (aborted) continue;
     } finally {
@@ -237,6 +241,8 @@ async function harvestKeyword(
 
   const sessionId = genSessionId(); // one browsing session per keyword
   let requestCount = 0;
+  const expandTop = Math.max(0, getSettingNum('expand_top'));
+  const alphabet = getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz';
 
   const insRaw = db.prepare(
     `INSERT INTO suggestions_raw
@@ -288,9 +294,12 @@ async function harvestKeyword(
     basicCount += 1;
   });
 
+  // refine the planned budget with the number of base words actually returned
+  const baseUsed = Math.min(expandTop, basicPhrases.length);
+  const expectedRequests = 1 + (expandTop > 0 ? baseUsed * alphabet.length : 0);
+  db.prepare('UPDATE run_items SET expected_requests = ?, done_requests = 1 WHERE id = ?').run(expectedRequests, item.id);
+
   // --- 2. a-z expansion over top base words ---
-  const expandTop = Math.max(0, getSettingNum('expand_top'));
-  const alphabet = getSetting('alphabet') || 'abcdefghijklmnopqrstuvwxyz';
   let expandCount = 0;
   const seen = new Set(basicPhrases.map(normalizePhrase));
 
@@ -319,6 +328,9 @@ async function harvestKeyword(
           if (signal.aborted || (err as CrawlerError).message === 'aborted') throw err;
           // single letter failure: log and continue
           console.warn(`[crawler] expand "${baseWord} ${letter}" failed: ${(err as Error).message}`);
+        } finally {
+          // count every attempted logical request so the UI progress keeps moving on failures
+          db.prepare('UPDATE run_items SET done_requests = done_requests + 1 WHERE id = ?').run(item.id);
         }
       }
     }

@@ -233,6 +233,30 @@ const App = {
     runStatusTag(s) {
       return { done: 'green', running: 'blue', pending: 'gray', failed: 'red', cancelled: 'amber', skipped: 'gray' }[s] || 'gray';
     },
+    runProgress(r) {
+      const expected = Number(r.requests_expected) || 0;
+      const done = Number(r.requests_done) || 0;
+      if (expected > 0) {
+        return {
+          pct: Math.min(100, Math.round(done / expected * 100)),
+          text: `请求 ${done}/${expected}`,
+          sub: `${r.done_keywords}/${r.total_keywords} 词`,
+        };
+      }
+      const pct = r.total_keywords ? Math.round(r.done_keywords / r.total_keywords * 100) : 0;
+      return { pct, text: `${r.done_keywords}/${r.total_keywords} 词`, sub: '' };
+    },
+    runRequests(r) {
+      const expected = Number(r.requests_expected) || 0;
+      return expected > 0 ? `${Number(r.requests_done) || 0}/${expected}` : `${r.total_requests ?? 0}`;
+    },
+    itemProgress(it) {
+      if (it.status === 'running' || it.status === 'pending') {
+        const expected = Number(it.expected_requests) || 0;
+        if (expected > 0) return `${Number(it.done_requests) || 0}/${expected}`;
+      }
+      return `${it.request_count ?? 0}`;
+    },
 
     // -------------------------------------------------------------- trends
     async loadTrend() {
@@ -509,17 +533,17 @@ const App = {
       </div>
       <div class="card">
         <table v-if="runList.length">
-          <thead><tr><th>#</th><th>触发</th><th>状态</th><th>进度</th><th class="num">请求</th><th class="num">失败</th><th>开始时间</th><th>结束时间</th><th></th></tr></thead>
+          <thead><tr><th>#</th><th>触发</th><th>状态</th><th>进度</th><th class="num">请求(已/计划)</th><th class="num">失败</th><th>开始时间</th><th>结束时间</th><th></th></tr></thead>
           <tbody>
             <tr v-for="r in runList" :key="r.id">
               <td>{{r.id}}</td>
               <td>{{r.trigger_type==='weekly'?'周调度':'手动'}}</td>
               <td><span class="tag" :class="runStatusTag(r.status)">{{r.status}}</span></td>
-              <td style="min-width:130px">
-                <div class="progress"><i :style="{width:(r.total_keywords? Math.round(r.done_keywords/r.total_keywords*100):0)+'%'}"></i></div>
-                <span class="muted" style="font-size:11px">{{r.done_keywords}}/{{r.total_keywords}}</span>
+              <td style="min-width:160px">
+                <div class="progress"><i :style="{width:runProgress(r).pct+'%'}"></i></div>
+                <span class="muted" style="font-size:11px">{{runProgress(r).text}}<span v-if="runProgress(r).sub"> · {{runProgress(r).sub}}</span></span>
               </td>
-              <td class="num">{{r.total_requests}}</td>
+              <td class="num">{{runRequests(r)}}</td>
               <td class="num" :style="{color:r.error_requests>0?'var(--red)':''}">{{r.error_requests}}</td>
               <td class="muted">{{fmtDate(r.started_at)}}</td>
               <td class="muted">{{fmtDate(r.finished_at)}}</td>
@@ -750,12 +774,12 @@ const App = {
         <template v-if="modal.type==='run'">
           <div class="row" style="margin-bottom:12px">
             <span class="tag" :class="runStatusTag(modal.run.status)">{{modal.run.status}}</span>
-            <span class="muted">{{modal.run.done_keywords}}/{{modal.run.total_keywords}} 关键词 · 请求 {{modal.run.total_requests}} · 失败 {{modal.run.error_requests}}</span>
+            <span class="muted">{{modal.run.done_keywords}}/{{modal.run.total_keywords}} 关键词 · 请求 {{runRequests(modal.run)}} · 失败 {{modal.run.error_requests}}</span>
           </div>
-          <div class="progress" style="margin-bottom:14px"><i :style="{width:(modal.run.total_keywords? Math.round(modal.run.done_keywords/modal.run.total_keywords*100):0)+'%'}"></i></div>
+          <div class="progress" style="margin-bottom:14px"><i :style="{width:runProgress(modal.run).pct+'%'}"></i></div>
           <div style="max-height:420px;overflow:auto">
             <table>
-              <thead><tr><th>关键词</th><th>站点</th><th>状态</th><th class="num">基础</th><th class="num">扩展</th><th class="num">请求</th><th>错误</th></tr></thead>
+              <thead><tr><th>关键词</th><th>站点</th><th>状态</th><th class="num">基础</th><th class="num">扩展</th><th class="num">请求(已/计划)</th><th>错误</th></tr></thead>
               <tbody>
                 <tr v-for="it in modal.items" :key="it.id">
                   <td>{{it.keyword_text}}</td>
@@ -763,7 +787,7 @@ const App = {
                   <td><span class="tag" :class="runStatusTag(it.status)">{{it.status}}</span></td>
                   <td class="num">{{it.basic_count}}</td>
                   <td class="num">{{it.expand_count}}</td>
-                  <td class="num">{{it.request_count}}</td>
+                  <td class="num">{{itemProgress(it)}}</td>
                   <td class="muted" style="font-size:11px">{{it.error}}</td>
                 </tr>
               </tbody>

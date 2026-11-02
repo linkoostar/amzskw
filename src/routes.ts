@@ -281,7 +281,14 @@ export function registerApi(app: FastifyInstance): void {
   app.get('/api/runs', async (req) => {
     const q = req.query as { limit?: string };
     const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
-    return db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT ?').all(limit);
+    return db
+      .prepare(
+        `SELECT r.*,
+           COALESCE((SELECT SUM(done_requests) FROM run_items WHERE run_id = r.id), 0) AS requests_done,
+           COALESCE((SELECT SUM(expected_requests) FROM run_items WHERE run_id = r.id), 0) AS requests_expected
+         FROM runs r ORDER BY r.id DESC LIMIT ?`,
+      )
+      .all(limit);
   });
 
   app.post('/api/runs', async (req, reply) => {
@@ -296,7 +303,14 @@ export function registerApi(app: FastifyInstance): void {
 
   app.get('/api/runs/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(id);
+    const run = db
+      .prepare(
+        `SELECT r.*,
+           COALESCE((SELECT SUM(done_requests) FROM run_items WHERE run_id = r.id), 0) AS requests_done,
+           COALESCE((SELECT SUM(expected_requests) FROM run_items WHERE run_id = r.id), 0) AS requests_expected
+         FROM runs r WHERE r.id = ?`,
+      )
+      .get(id);
     if (!run) return reply.code(404).send({ error: 'not found' });
     const items = db
       .prepare(

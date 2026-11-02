@@ -24,8 +24,14 @@ function errorResult(message: string) {
 
 class McpToolError extends Error {}
 
-/** Guard for LIVE Amazon tools: per-key switch, per-key daily quota, global daily cap. */
-function liveGuard(key: ApiKeyRow): void {
+/** Guard for LIVE Amazon tools: caller identity, per-key switch, per-key daily quota, global daily cap. */
+function liveGuard(key: ApiKeyRow, clientId: string): void {
+  if (!clientId) {
+    throw new McpToolError(
+      'live fetching requires caller identification: add header "X-Client-Id: <your-agent-name>" to the MCP connection. ' +
+        'The administrator uses it to attribute live calls to each agent/person sharing this API key.',
+    );
+  }
   if (!key.can_live) {
     throw new McpToolError('live fetching is disabled for this API key by the administrator (tool: search_*). Use lookup_lexicon / get_keyword_trends instead.');
   }
@@ -40,37 +46,53 @@ function liveGuard(key: ApiKeyRow): void {
   }
 }
 
-/** Merge live-fetched phrases into the persistent lexicon + archive the raw payload (if enabled). */
-function persistLivePhrases(mid: string, seedKeyword: string, phrases: string[], rawPayloads: unknown[]): number {
-  if (!getSettingNum('mcp_live_persist')) return 0;
-  const db = getDb();
-  const up = db.prepare(
-    `INSERT INTO lexicon(mid, phrase_norm, phrase, first_seen_at, last_seen_at, seen_count)
-     VALUES (?, ?, ?, ?, ?, 1)
-     ON CONFLICT(mid, phrase_norm) DO UPDATE SET seen_count = seen_count + 1, last_seen_at = excluded.last_seen_at`,
-  );
+/** Merge live-fetched phrases into the persistent lexicon + archive raw payloads + auto-seed a PAUSED keyword. */
+function persistLiveResults(mid: string, seedKeyword: string, phrases: string[], rawBodies: string[], clientId: string) {
   let stored = 0;
-  const tx = db.transaction(() => {
+  let autoSeedCreated = false;
+  if (getSettingNum('mcp_live_persist')) {
+    const db = getDb();
+    const up = db.prepare(
+      `INSERT INTO lexicon(mid, phrase_norm, phrase, first_seen_at, last_seen_at, seen_count)
+       VALUES (?, ?, ?, ?, ?, 1)
+       ON CONFLICT(mid, phrase_norm) DO UPDATE SET seen_count = seen_count + 1, last_seen_at = excluded.last_seen_at`,
+    );
+    const insKw = db.prepare(
+      "INSERT OR IGNORE INTO keywords(text, mid, alias, status, note) VALUES (?, ?, 'aps', 'paused', ?)",
+    );
     const seen = new Set<string>();
-    for (const p of phrases) {
-      const norm = normalizePhrase(p);
-      if (!norm || seen.has(norm)) continue;
-      seen.add(norm);
-      up.run(mid, norm, p.trim(), nowIso(), nowIso());
-      stored++;
-    }
-    for (const raw of rawPayloads) {
-      db.prepare(
-        "INSERT INTO fetch_log(url, ok, response_body) VALUES (?, 1, ?)",
-      ).run(`mcp://live/${mid}/${encodeURIComponent(seedKeyword)}`, JSON.stringify(raw));
-    }
-  });
-  tx();
-  return stored;
+    const tx = db.transaction(() => {
+      for (const p of phrases) {
+        const norm = normalizePhrase(p);
+        if (!norm || seen.has(norm)) continue;
+        seen.add(norm);
+        up.run(mid, norm, p.trim(), nowIso(), nowIso());
+        stored++;
+      }
+      for (const raw of rawBodies) {
+        db.prepare('INSERT INTO fetch_log(url, ok, response_body) VALUES (?, 1, ?)').run(
+          `mcp://live/${mid}/${encodeURIComponent(seedKeyword)}`,
+          raw.slice(0, 65536),
+        );
+      }
+      // auto-seed: keep the fetched keyword as a PAUSED seed for possible future scheduled harvesting
+      if (getSettingNum('mcp_live_auto_seed')) {
+        const wc = seedKeyword.trim().split(/\s+/).length;
+        const mn = getSettingNum('live_seed_min_words') || 2;
+        const mx = getSettingNum('live_seed_max_words') || 5;
+        if (wc >= mn && wc <= mx) {
+          const note = `auto: live fetch via MCP${clientId ? ` (${clientId})` : ''} — paused, review before enabling`;
+          autoSeedCreated = insKw.run(seedKeyword.trim(), mid, note).changes > 0;
+        }
+      }
+    });
+    tx();
+  }
+  return { stored, autoSeedCreated };
 }
 
 /** wrap a tool handler with credit charging */
-function billable(key: ApiKeyRow, tool: string, handler: (args: any) => Promise<unknown>) {
+function billable(key: ApiKeyRow, clientId: string, tool: string, handler: (args: any) => Promise<unknown>) {
   return async (args: any) => {
     const price = getToolPrice(tool);
     let balance: number;
@@ -84,7 +106,7 @@ function billable(key: ApiKeyRow, tool: string, handler: (args: any) => Promise<
       }
       throw e;
     }
-    logApiCall(key.id, tool);
+    logApiCall(key.id, tool, clientId);
     try {
       const data = await handler(args);
       return jsonResult(data, price > 0 ? { credits_charged: price, credits_balance: balance } : {});
@@ -95,7 +117,7 @@ function billable(key: ApiKeyRow, tool: string, handler: (args: any) => Promise<
   };
 }
 
-function buildMcpServer(key: ApiKeyRow): McpServer {
+function buildMcpServer(key: ApiKeyRow, clientId: string): McpServer {
   const server = new McpServer({ name: 'amz-lexicon', version: config.version });
 
   server.registerTool(
@@ -104,7 +126,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
       description: 'List supported Amazon marketplaces (mid, name, locale). Use `mid` in other tools to pick a site.',
       inputSchema: {},
     },
-    billable(key, 'list_sites', async () => {
+    billable(key, clientId, 'list_sites', async () => {
       const sites = getDb().prepare('SELECT mid, name, flag, locale FROM sites ORDER BY sort').all();
       return { sites };
     }),
@@ -116,7 +138,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
       description: 'Harvest database statistics: total seed keywords, lexicon size, suggestions stored, recent fetch health.',
       inputSchema: {},
     },
-    billable(key, 'get_stats', async () => getStats()),
+    billable(key, clientId, 'get_stats', async () => getStats()),
   );
 
   server.registerTool(
@@ -131,7 +153,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
         offset: z.number().optional().default(0),
       },
     },
-    billable(key, 'lookup_lexicon', async (args: { query: string; mid?: string; limit?: number; offset?: number }) => {
+    billable(key, clientId, 'lookup_lexicon', async (args: { query: string; mid?: string; limit?: number; offset?: number }) => {
       const limit = Math.min(100, Math.max(1, args.limit ?? 30));
       const offset = Math.max(0, args.offset ?? 0);
       const { total, items } = searchLexicon(args.query ?? '', args.mid, limit, offset);
@@ -152,6 +174,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'get_keyword_trends',
       async (args: { keyword: string; mid?: string; runs?: number }) => {
         const db = getDb();
@@ -182,8 +205,8 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
         limit: z.number().optional().default(15).describe('Max suggestions (1-30)'),
       },
     },
-    billable(key, 'search_suggestions', async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
-      liveGuard(key);
+    billable(key, clientId, 'search_suggestions', async (args: { keyword: string; mid?: string; alias?: string; limit?: number }) => {
+      liveGuard(key, clientId);
       const mid = args.mid ?? 'ATVPDKIKX0DER';
       const res = await liveFetch({
         prefix: args.keyword,
@@ -192,12 +215,16 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
         limit: Math.min(30, Math.max(1, args.limit ?? 15)),
       });
       const values = res.suggestions.map((s) => s.value);
-      const stored = persistLivePhrases(mid, args.keyword, values, [res.body]);
+      const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, values, [res.body], clientId);
       return {
         keyword: args.keyword,
         mid,
         suggestions: res.suggestions.map((s, i) => ({ position: i + 1, value: s.value, strategyId: s.strategyId })),
         persisted_to_lexicon: stored,
+        auto_seed_created: autoSeedCreated,
+        auto_seed_note: autoSeedCreated
+          ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
+          : undefined,
         fetched_at: new Date().toISOString(),
       };
     }),
@@ -222,9 +249,10 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'search_suggestions_expand',
       async (args: { keyword: string; mid?: string; alias?: string; limit?: number; expand_top?: number; letters?: string }) => {
-        liveGuard(key);
+        liveGuard(key, clientId);
         const mid = args.mid ?? 'ATVPDKIKX0DER';
         const alias = args.alias ?? 'aps';
         const limit = Math.min(30, Math.max(1, args.limit ?? 15));
@@ -254,7 +282,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
           }
         }
         const allPhrases = [...baseWords, ...expanded.map((e) => e.phrase)];
-        const stored = persistLivePhrases(mid, args.keyword, allPhrases, rawBodies);
+        const { stored, autoSeedCreated } = persistLiveResults(mid, args.keyword, allPhrases, rawBodies, clientId);
         return {
           keyword: args.keyword,
           mid,
@@ -262,6 +290,10 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
           expanded,
           total_unique: seen.size,
           persisted_to_lexicon: stored,
+          auto_seed_created: autoSeedCreated,
+          auto_seed_note: autoSeedCreated
+            ? 'the keyword was added to the seed list as PAUSED (not scheduled); the administrator can enable it for weekly harvesting'
+            : undefined,
           fetched_at: new Date().toISOString(),
         };
       },
@@ -284,6 +316,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'analyze_roots',
       async (args: { query: string; mid?: string; min_count?: number; limit?: number }) => {
         const db = getDb();
@@ -338,6 +371,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'rising_keywords',
       async (args: { keyword: string; mid?: string; runs?: number }) => {
         const db = getDb();
@@ -391,6 +425,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'cross_site_gap',
       async (args: { query: string; mid_a?: string; mid_b?: string; limit?: number }) => {
         const db = getDb();
@@ -436,6 +471,7 @@ function buildMcpServer(key: ApiKeyRow): McpServer {
     },
     billable(
       key,
+      clientId,
       'weekly_digest',
       async (args: { mid?: string; top?: number }) => {
         const db = getDb();
@@ -502,7 +538,8 @@ export function registerMcpEndpoint(app: FastifyInstance): void {
     if (!auth.ok || !auth.key) {
       return reply.code(401).send(jsonRpcError(-32001, auth.error ?? 'unauthorized'));
     }
-    const server = buildMcpServer(auth.key);
+    const clientId = String(req.headers['x-client-id'] ?? '').trim().slice(0, 64);
+    const server = buildMcpServer(auth.key, clientId);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on('close', () => {
       void transport.close();

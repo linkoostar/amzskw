@@ -63,13 +63,14 @@ npm run build && npm start
 
 ### 实时抓取管控（live 工具）
 
-`search_suggestions` / `search_suggestions_expand` 直打亚马逊，有三层管控（API Keys 页可管理）：
+`search_suggestions` / `search_suggestions_expand` 直打亚马逊，有四层管控（API Keys 页可管理）：
 
-1. **按 Key 开关**：每个 API Key 可一键「允许 / 禁止」实时抓取
-2. **按 Key 日限额**：每 Key 每天的 live 调用次数上限（默认 20，可改），UTC 零点重置
-3. **全服日上限**：所有 Key 合计的 live 调用日上限（设置项 `mcp_live_global_daily`，默认 200）
+1. **调用方身份（必填）**：live 调用必须在 MCP 连接头里带 `X-Client-Id: <调用方名字>`（如 `alice-claude`），多人共用一个 key 时用于区分是谁调的；调用记录弹窗可见
+2. **按 Key 开关**：每个 API Key 可一键「允许 / 禁止」实时抓取
+3. **按 Key 日限额**：每 Key 每天的 live 调用次数上限（默认 20，可改），UTC 零点重置
+4. **全服日上限**：所有 Key 合计的 live 调用日上限（设置项 `mcp_live_global_daily`，默认 200）
 
-live 抓到的词默认**落库**（合并进词库 + 原始报文归档 fetch_log，设置项 `mcp_live_persist` 可关掉变成纯透传），每个计费调用都会记录到 `api_calls` 审计表。
+live 抓到的词默认**落库**（合并进词库 + 原始报文归档 fetch_log，设置项 `mcp_live_persist` 可关掉），并且当关键词在 [2, 5] 个词范围内时（`live_seed_min/max_words` 可调），**自动创建为「暂停」状态的种子词**（不参与定时抓取，备注注明来源与调用方），管理员审核后在关键词页手动启用即可进入每周调度。每个计费调用都会记录到 `api_calls` 审计表（含调用方身份）。
 
 ## 网络受限环境
 

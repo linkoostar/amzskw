@@ -50,7 +50,10 @@ const App = {
         mcpServers: {
           'amz-lexicon': {
             url: location.origin + '/mcp',
-            headers: { Authorization: 'Bearer ' + this.newKey.key },
+            headers: {
+              Authorization: 'Bearer ' + this.newKey.key,
+              'X-Client-Id': '把这里改成调用方名字，如 alice-claude（多人共用 key 时用于区分身份）',
+            },
           },
         },
       }, null, 2);
@@ -264,6 +267,12 @@ const App = {
       await api('PUT', '/api/keys/' + k.id, { live_daily_limit: n });
       k.live_daily_limit = n;
       this.notify('限额已更新');
+    },
+    async showCalls(k) {
+      try {
+        const rows = await api('GET', `/api/keys/${k.id}/calls`);
+        this.modal = { type: 'calls', title: `调用记录 — ${k.name}（最近 ${rows.length} 条）`, rows };
+      } catch (e) { this.handleErr(e); }
     },
     async topupKey(k, current) {
       const v = prompt(`为「${k.name}」充值 credits（正数充值，负数扣减）:`, '1000');
@@ -523,7 +532,7 @@ const App = {
           </tr></thead>
           <tbody>
             <tr v-for="it in lexData.items" :key="it.id">
-              <td style="font-weight:600">{{it.phrase}}</td>
+              <td><span style="font-weight:600">{{it.phrase}}</span> <span v-if="it.is_core" class="tag blue">核心</span></td>
               <td>{{siteFlag(it.mid)}}</td>
               <td class="num">{{it.seen_count}}</td>
               <td class="muted">{{it.first_seen_at.slice(0,10)}}</td>
@@ -580,6 +589,7 @@ const App = {
               <td><div class="row" style="flex-wrap:nowrap">
                 <button class="btn sm" @click="topupKey(k,'充值')">充值</button>
                 <button class="btn sm" @click="showLedger(k)">流水</button>
+                <button class="btn sm" @click="showCalls(k)">调用</button>
                 <button v-if="k.active" class="btn sm danger" @click="revokeKey(k)">吊销</button>
                 <button class="btn sm danger" @click="delKey(k)">删除</button>
               </div></td>
@@ -627,6 +637,11 @@ const App = {
           <div class="group-title">存储与 MCP</div>
           <label>fetch_log 原始报文保留天数<input v-model="settingsForm.fetch_log_keep_days" type="number"></label>
           <label>MCP 限流（每 key 每分钟调用上限）<input v-model="settingsForm.mcp_rate_limit_per_min" type="number"></label>
+          <label>MCP live 全服每日上限（所有 key 合计）<input v-model="settingsForm.mcp_live_global_daily" type="number"></label>
+          <label>live 抓取结果合并进词库（1 开 / 0 关）<input v-model="settingsForm.mcp_live_persist" type="number" min="0" max="1"></label>
+          <label>live 关键词自动建为暂停种子词（1 开 / 0 关）<input v-model="settingsForm.mcp_live_auto_seed" type="number" min="0" max="1"></label>
+          <label>自动建种子词的最少词数<input v-model="settingsForm.live_seed_min_words" type="number"></label>
+          <label>自动建种子词的最多词数<input v-model="settingsForm.live_seed_max_words" type="number"></label>
         </div>
       </div>
       <div class="card">
@@ -672,6 +687,20 @@ const App = {
               </tbody>
             </table>
           </div>
+        </template>
+
+        <template v-else-if="modal.type==='calls'">
+          <table>
+            <thead><tr><th>时间</th><th>调用方</th><th>工具</th></tr></thead>
+            <tbody>
+              <tr v-for="r in modal.rows" :key="r.id">
+                <td class="muted">{{fmtDate(r.created_at)}}</td>
+                <td><span class="tag" :class="r.client_id?'blue':'gray'">{{r.client_id || '未标识'}}</span></td>
+                <td class="mono">{{r.tool}}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="muted" style="margin-top:10px">调用方由请求头 X-Client-Id 提供；未标识的调用不会记录身份。</p>
         </template>
 
         <template v-else-if="modal.type==='ledger'">

@@ -79,8 +79,8 @@ export function touchLastUsed(apiKeyId: number): void {
 }
 
 /** Record one billable tool call for quota/audit purposes. */
-export function logApiCall(apiKeyId: number, tool: string): void {
-  getDb().prepare('INSERT INTO api_calls(api_key_id, tool) VALUES (?, ?)').run(apiKeyId, tool);
+export function logApiCall(apiKeyId: number, tool: string, clientId = ''): void {
+  getDb().prepare('INSERT INTO api_calls(api_key_id, tool, client_id) VALUES (?, ?, ?)').run(apiKeyId, tool, clientId);
 }
 
 /** Count live-fetch tool calls since midnight (UTC). */

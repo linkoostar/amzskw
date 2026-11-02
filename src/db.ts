@@ -76,6 +76,10 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   mcp_live_persist: '1',
   // global safety cap: max live tool calls (all keys) per day
   mcp_live_global_daily: '200',
+  // auto-seed: live keywords within [min, max] words are auto-added as PAUSED seed keywords
+  mcp_live_auto_seed: '1',
+  live_seed_min_words: '2',
+  live_seed_max_words: '5',
 };
 
 const DEFAULT_SITES: Array<{ mid: string; name: string; flag: string; locale: string; sort: number }> = [

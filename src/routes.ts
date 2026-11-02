@@ -262,6 +262,13 @@ export function registerApi(app: FastifyInstance): void {
     return { ok: true };
   });
 
+  app.get('/api/keys/:id/calls', async (req) => {
+    const { id } = req.params as { id: string };
+    return db
+      .prepare('SELECT id, tool, client_id, created_at FROM api_calls WHERE api_key_id = ? ORDER BY id DESC LIMIT 100')
+      .all(id);
+  });
+
   app.post('/api/keys/:id/revoke', async (req) => {
     const { id } = req.params as { id: string };
     db.prepare('UPDATE api_keys SET active=0, revoked_at=? WHERE id=?').run(nowIso(), id);

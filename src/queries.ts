@@ -195,14 +195,18 @@ export function searchLexicon(
   const q = `%${normalizePhrase(query)}%`;
   const where: string[] = [];
   const args: unknown[] = [];
-  if (query) { where.push('phrase_norm LIKE ?'); args.push(q); }
-  if (mid) { where.push('mid = ?'); args.push(mid); }
+  if (query) { where.push('l.phrase_norm LIKE ?'); args.push(q); }
+  if (mid) { where.push('l.mid = ?'); args.push(mid); }
   const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
   const col = LEX_SORTS[sort] ?? 'seen_count';
   const d = dir === 'asc' ? 'ASC' : 'DESC';
-  const total = (db.prepare(`SELECT COUNT(*) c FROM lexicon ${w}`).get(...args) as { c: number }).c;
+  const total = (db.prepare(`SELECT COUNT(*) c FROM lexicon l ${w}`).get(...args) as { c: number }).c;
   const items = db
-    .prepare(`SELECT id, mid, phrase, first_seen_at, last_seen_at, seen_count FROM lexicon ${w} ORDER BY ${col} ${d}, id ASC LIMIT ? OFFSET ?`)
+    .prepare(
+      `SELECT l.id, l.mid, l.phrase, l.first_seen_at, l.last_seen_at, l.seen_count,
+        EXISTS(SELECT 1 FROM suggestions_raw r WHERE r.mid = l.mid AND r.phrase_norm = l.phrase_norm AND r.source_type = 'basic') AS is_core
+       FROM lexicon l ${w} ORDER BY l.${col} ${d}, l.id ASC LIMIT ? OFFSET ?`,
+    )
     .all(...args, limit, offset);
   return { total, items };
 }

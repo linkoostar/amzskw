@@ -19,8 +19,10 @@ const App = {
   data() {
     return {
       authed: false, ready: false, loginPassword: '', loginErr: '',
-      route: 'dashboard',
+      route: 'modules',
       toast: '', errToast: '',
+      // modules (base registry, drives navigation)
+      modules: [], switchVar: 'AMZ_ENABLED_MODULES',
       stats: null,
       sites: [],
       // keywords
@@ -54,6 +56,51 @@ const App = {
       const list = q ? this.kwList.filter((k) => k.text.toLowerCase().includes(q) || k.mid.toLowerCase().includes(q)) : this.kwList;
       return list.slice(0, 60);
     },
+    // 哪些现有页面归属于哪个模块（模块 id -> 路由键数组）。
+    // 新增模块只要在这里登记，侧边栏就自动出现对应入口；不改 template。
+    moduleRoutes() {
+      return {
+        lexicon: [
+          { route: 'dashboard', icon: '📊', label: '仪表盘' },
+          { route: 'keywords', icon: '🔑', label: '关键词管理' },
+          { route: 'runs', icon: '🚚', label: '抓取任务' },
+          { route: 'trends', icon: '📈', label: '排名趋势' },
+          { route: 'lexicon', icon: '📚', label: '词库检索' },
+        ],
+      };
+    },
+    // 后端模块清单 -> 分组导航。数据模块在前，系统管理在后。
+    navGroups() {
+      const groups = [];
+      const active = this.modules.filter((m) => m.enabled);
+      for (const m of active) {
+        const pages = this.moduleRoutes[m.id];
+        if (!pages) continue; // 已启用但前端尚无页面：只在模块总览展示，不生成空入口
+        groups.push({
+          key: m.id,
+          label: m.name,
+          core: m.core,
+          items: pages.map((p) => ({ ...p, route: p.route })),
+        });
+      }
+      groups.push({
+        key: 'system', label: '基座管理', core: true,
+        items: [
+          { route: 'modules', icon: '🧩', label: '模块总览' },
+          { route: 'keys', icon: '🎫', label: 'API Keys / 计费' },
+          { route: 'settings', icon: '⚙️', label: '系统设置' },
+        ],
+      });
+      return groups;
+    },
+    routeTitle() {
+      // 优先从模块页签找标题，否则用系统路由表
+      for (const g of this.navGroups) {
+        const hit = g.items.find((i) => i.route === this.route);
+        if (hit) return hit.label;
+      }
+      return { modules: '模块总览', keys: 'API Keys / Credits 计费', settings: '系统设置' }[this.route] || this.route;
+    },
     mcpConfig() {
       if (!this.newKey) return '';
       return JSON.stringify({
@@ -73,16 +120,20 @@ const App = {
     window.addEventListener('hashchange', () => this.onRoute());
     try { await api('GET', '/api/auth/me').then(r => this.authed = r.authed); } catch {}
     this.ready = true;
-    if (this.authed) this.onRoute(true);
+    if (this.authed) {
+      await this.loadModules();
+      this.onRoute(true);
+    }
   },
   methods: {
     fmtDate, esc,
     nav(r) { location.hash = '#' + r; },
     onRoute(force) {
       if (!this.authed) return;
-      const r = (location.hash.slice(1) || 'dashboard');
+      const r = (location.hash.slice(1) || 'modules');
       this.route = r;
       this.toast = '';
+      if (r === 'modules') return; // 模块总览数据已在 mounted 加载
       if (r === 'dashboard') this.loadStats();
       if (r === 'keywords') this.loadKeywords();
       if (r === 'runs') { this.loadRuns(); this.startPoll(); } else this.stopPoll();
@@ -99,12 +150,20 @@ const App = {
       try {
         await api('POST', '/api/auth/login', { password: this.loginPassword });
         this.authed = true;
+        await this.loadModules();
         await this.loadSites();
         this.onRoute(true);
       } catch (e) { this.loginErr = '密码错误'; }
     },
     async logout() { await api('POST', '/api/auth/logout'); this.authed = false; },
 
+    async loadModules() {
+      try {
+        const r = await api('GET', '/api/modules');
+        this.modules = r.modules ?? [];
+        this.switchVar = r.switchVar || 'AMZ_ENABLED_MODULES';
+      } catch (e) { this.handleErr(e); }
+    },
     async loadStats() { try { this.stats = await api('GET', '/api/stats'); } catch (e) { this.handleErr(e); } },
     async loadSites() {
       if (this.sites.length) return;
@@ -449,8 +508,8 @@ const App = {
 <div v-if="!ready"></div>
 <div v-else-if="!authed" class="login-wrap">
   <form class="login" @submit.prevent="login">
-    <h2>AMZ Lexicon</h2>
-    <p>亚马逊搜索联想词词库 · 管理后台</p>
+    <h2>AMZ Data Hub</h2>
+    <p>数据 MCP 基座 · 模块化管理后台</p>
     <div v-if="loginErr" class="err">{{loginErr}}</div>
     <input type="password" v-model="loginPassword" placeholder="管理员密码" autofocus>
     <button class="btn primary" type="submit">登 录</button>
@@ -458,15 +517,12 @@ const App = {
 </div>
 <div v-else class="layout">
   <aside class="sidebar">
-    <div class="logo">AMZ Lexicon<small>亚马逊联想词词库</small></div>
+    <div class="logo">AMZ Data Hub<small>数据 MCP 基座</small></div>
     <nav class="nav">
-      <a :class="{on:route==='dashboard'}" href="#dashboard">📊 仪表盘</a>
-      <a :class="{on:route==='keywords'}" href="#keywords">🔑 关键词管理</a>
-      <a :class="{on:route==='runs'}" href="#runs">🚚 抓取任务</a>
-      <a :class="{on:route==='trends'}" href="#trends">📈 排名趋势</a>
-      <a :class="{on:route==='lexicon'}" href="#lexicon">📚 词库检索</a>
-      <a :class="{on:route==='keys'}" href="#keys">🎫 API Keys / 计费</a>
-      <a :class="{on:route==='settings'}" href="#settings">⚙️ 系统设置</a>
+      <template v-for="g in navGroups" :key="g.key">
+        <div class="nav-group">{{g.label}} <span v-if="g.key!=='system'" class="nav-core" :title="g.core?'核心模块（恒启用）':'可选模块'">{{g.core?'core':'opt'}}</span></div>
+        <a v-for="it in g.items" :key="it.route" :class="{on:route===it.route}" :href="'#'+it.route">{{it.icon}} {{it.label}}</a>
+      </template>
     </nav>
     <div class="mcp-hint" style="padding:14px 18px;font-size:11px;color:#5d6b81">
       MCP: <span class="mono" style="color:#8ea2bd">POST /mcp</span>
@@ -474,13 +530,44 @@ const App = {
   </aside>
   <main class="main">
     <div class="topbar">
-      <h1>{{ {dashboard:'仪表盘',keywords:'关键词管理',runs:'抓取任务',trends:'排名趋势',lexicon:'词库检索',keys:'API Keys / Credits 计费',settings:'系统设置'}[route] }}</h1>
+      <h1>{{routeTitle}}</h1>
       <div class="userbox">
         <span v-if="toast" class="okmsg">{{toast}}</span>
         <span v-else-if="errToast" class="err">{{errToast}}</span>
         <button class="btn sm" @click="logout">退出</button>
       </div>
     </div>
+
+    <!-- ==================== MODULES OVERVIEW ==================== -->
+    <template v-if="route==='modules'">
+      <div class="card hub-intro">
+        <h3>数据 MCP 基座</h3>
+        <p class="muted">各功能以模块形式接入，统一通过 <span class="mono">POST /mcp</span> 向 agent 分发数据。模块化的收益是：新增数据能力不改核心、默认关闭、按需灰度。</p>
+      </div>
+      <div class="mod-grid">
+        <div class="card mod-card" v-for="m in modules" :key="m.id">
+          <div class="mod-head">
+            <div class="mod-title">{{m.name}}</div>
+            <div class="mod-badges">
+              <span class="tag" :class="m.core?'blue':'muted-tag'" :title="m.core?'核心模块，恒启用':'可选模块，默认关闭'">{{m.core?'core':'optional'}}</span>
+              <span class="tag" :class="m.enabled?'green':'gray'">{{m.enabled?'已启用':'未启用'}}</span>
+            </div>
+          </div>
+          <div class="mod-meta"><span class="mono">id={{m.id}}</span> · v{{m.version}} · {{m.tools.length}} 个 MCP 工具</div>
+          <div class="mod-tools">
+            <div class="mod-tool" v-for="t in m.tools" :key="t.name">
+              <span class="mono tool-name">{{t.name}}</span>
+              <span v-if="t.live" class="tag amber" title="直连外部数据源，受 live 治理管控">live</span>
+              <span class="tool-desc">{{t.description}}</span>
+            </div>
+            <div v-if="!m.tools.length" class="muted" style="font-size:12px">该模块暂无工具</div>
+          </div>
+          <div class="mod-foot" v-if="!m.core">
+            开启方式：环境变量 <span class="mono">{{switchVar}}={{m.id}}</span>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <!-- ==================== DASHBOARD ==================== -->
     <template v-if="route==='dashboard'">

@@ -16,7 +16,9 @@
 
 import type { ModuleContract } from './types.js';
 import type { ApiKeyRow } from '../credits.js';
+import type { FastifyInstance } from 'fastify';
 import { lexiconModule } from './lexicon/index.js';
+import { reviewsModule } from './reviews/index.js';
 
 /** 恒启用的核心模块（既有生产功能）。 */
 const CORE_MODULES: ModuleContract[] = [lexiconModule];
@@ -25,7 +27,7 @@ const CORE_MODULES: ModuleContract[] = [lexiconModule];
  * 可选模块注册表（P3+ 填入）。
  * 这里预置为占位：未来评论 / ETL 模块 import 后加入本数组，默认不启用。
  */
-const OPTIONAL_MODULES: ModuleContract[] = [];
+const OPTIONAL_MODULES: ModuleContract[] = [reviewsModule];
 
 function enabledOptionalIds(): Set<string> {
   const raw = process.env.AMZ_ENABLED_MODULES ?? '';
@@ -51,6 +53,12 @@ const INTROSPECT_KEY: ApiKeyRow = {
   credits_balance: 0, can_live: 0, live_daily_limit: 0,
   created_at: '', last_used_at: null, revoked_at: null,
 };
+
+/** 让每个已启用模块注册自己的后台 API（核心零业务改动）。
+ *  仅调用 activeModules()，未启用模块的路由不会被挂载。 */
+export function registerModuleAdminApis(app: FastifyInstance): void {
+  for (const m of activeModules()) m.registerAdminApi?.(app);
+}
 
 /** 供后台/诊断展示：所有已知模块及其启用状态、贡献的工具清单。 */
 export function describeModules(): Array<{

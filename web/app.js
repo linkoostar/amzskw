@@ -22,7 +22,7 @@ const App = {
       route: 'modules',
       toast: '', errToast: '',
       // modules (base registry, drives navigation)
-      modules: [], switchVar: 'AMZ_ENABLED_MODULES',
+      modules: [], switchVar: 'AMZ_ENABLED_MODULES', navCollapsed: {},
       stats: null,
       sites: [],
       // keywords
@@ -38,6 +38,10 @@ const App = {
       trendKwQuery: '', trendKwOpen: false,
       // lexicon
       lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1, lexSort: 'cnt', lexDir: 'desc',
+      // reviews (negative intelligence)
+      revOverview: null, revList: null, revSummary: null, revJobs: null, revJobPoll: null,
+      revFilters: { asin: '', rating: '', keyword: '' }, revForm: { asin: '', country_code: 'US', max_reviews: 30 },
+      revBusy: false, revPage: 0,
       // keys
       keyList: [], keyForm: { name: '', credits: 100 }, newKey: null, ledger: null, ledgerName: '',
       // settings
@@ -67,7 +71,14 @@ const App = {
           { route: 'trends', icon: '📈', label: '排名趋势' },
           { route: 'lexicon', icon: '📚', label: '词库检索' },
         ],
+        reviews: [
+          { route: 'reviews', icon: '⭐', label: '差评情报' },
+        ],
       };
+    },
+    // 侧边栏短名：后端 name 是完整英文句，显示太长会折行；这里给每个模块一个中文短名。
+    moduleShortNames() {
+      return { lexicon: '联想词词库', reviews: 'ASIN 差评', system: '基座管理' };
     },
     // 后端模块清单 -> 分组导航。数据模块在前，系统管理在后。
     navGroups() {
@@ -76,15 +87,21 @@ const App = {
       for (const m of active) {
         const pages = this.moduleRoutes[m.id];
         if (!pages) continue; // 已启用但前端尚无页面：只在模块总览展示，不生成空入口
+        const hasActive = pages.some((p) => p.route === this.route);
         groups.push({
           key: m.id,
-          label: m.name,
+          label: this.moduleShortNames[m.id] || m.name,
+          icon: m.id === 'reviews' ? '💬' : '🧩',
           core: m.core,
+          // 默认：当前页所在分组展开、其余折叠；用户手动点过箭头则以手动值为准
+          collapsed: this.navCollapsed[m.id] === undefined ? !hasActive : this.navCollapsed[m.id],
           items: pages.map((p) => ({ ...p, route: p.route })),
         });
       }
+      const sysHasActive = ['modules', 'keys', 'settings'].includes(this.route);
       groups.push({
-        key: 'system', label: '基座管理', core: true,
+        key: 'system', label: this.moduleShortNames.system, icon: '⚙️', core: true,
+        collapsed: this.navCollapsed.system === undefined ? !sysHasActive : this.navCollapsed.system,
         items: [
           { route: 'modules', icon: '🧩', label: '模块总览' },
           { route: 'keys', icon: '🎫', label: 'API Keys / 计费' },
@@ -128,17 +145,20 @@ const App = {
   methods: {
     fmtDate, esc,
     nav(r) { location.hash = '#' + r; },
+    toggleGroup(key) { this.navCollapsed[key] = !this.navCollapsed[key]; },
     onRoute(force) {
       if (!this.authed) return;
       const r = (location.hash.slice(1) || 'modules');
       this.route = r;
       this.toast = '';
+      if (r !== 'reviews') this.stopRevPoll();
       if (r === 'modules') return; // 模块总览数据已在 mounted 加载
       if (r === 'dashboard') this.loadStats();
       if (r === 'keywords') this.loadKeywords();
       if (r === 'runs') { this.loadRuns(); this.startPoll(); } else this.stopPoll();
       if (r === 'trends') { this.loadKeywords().then(() => { if (!this.trendKid && this.kwList.length) this.trendKid = this.kwList[0].id; if (this.trendKid) { this.syncTrendKwQuery(); this.loadTrend(); } }); }
       if (r === 'lexicon') this.loadLexicon();
+      if (r === 'reviews') this.loadReviewsOverview();
       if (r === 'keys') this.loadKeys();
       if (r === 'settings') this.loadSettings();
       if (r === 'dashboard') this.loadSites();
@@ -164,6 +184,75 @@ const App = {
         this.switchVar = r.switchVar || 'AMZ_ENABLED_MODULES';
       } catch (e) { this.handleErr(e); }
     },
+
+    // ---------------- reviews 差评情报 ----------------
+    async loadReviewsOverview() {
+      try {
+        this.revOverview = await api('GET', '/api/reviews/overview');
+        this.revJobs = this.revOverview.jobs || [];
+        // 若有运行中的 job，启动轮询
+        const running = (this.revJobs).find((j) => j.status === 'running');
+        if (running) this.startRevPoll(running.job_id);
+        // 默认选中第一个 ASIN 看摘要
+        const first = this.revOverview.perAsin && this.revOverview.perAsin[0];
+        if (first && !this.revFilters.asin) this.revFilters.asin = first.asin;
+        if (this.revFilters.asin) this.loadReviewsSummary();
+        this.loadReviewsList();
+      } catch (e) { this.handleErr(e); }
+    },
+    async loadReviewsList() {
+      try {
+        const f = this.revFilters;
+        const q = new URLSearchParams({ limit: '30', offset: String(this.revPage * 30) });
+        if (f.asin) q.set('asin', f.asin);
+        if (f.rating) q.set('rating', f.rating);
+        if (f.keyword) q.set('keyword', f.keyword);
+        this.revList = await api('GET', '/api/reviews/list?' + q.toString());
+      } catch (e) { this.handleErr(e); }
+    },
+    async loadReviewsSummary() {
+      if (!this.revFilters.asin) { this.revSummary = null; return; }
+      try {
+        this.revSummary = await api('GET', '/api/reviews/summary?asin=' + encodeURIComponent(this.revFilters.asin));
+      } catch (e) { this.handleErr(e); }
+    },
+    pickRevAsin(asin) {
+      this.revFilters.asin = asin; this.revPage = 0;
+      this.loadReviewsSummary(); this.loadReviewsList();
+    },
+    async startRevFetch() {
+      const f = this.revForm;
+      const asin = String(f.asin || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) { this.errToast = '请输入 10 位 ASIN（如 B0DWF7823H）'; return; }
+      const mode = this.revOverview?.mode || 'mock';
+      if (mode === 'apify' && !confirm('当前为真实 Apify 模式，抓取会产生费用（约几分钱）。确认继续？')) return;
+      this.revBusy = true; this.errToast = '';
+      try {
+        const r = await api('POST', '/api/reviews/fetch', { asin, country_code: f.country_code, max_reviews: f.max_reviews });
+        this.notify(`已提交抓取任务 ${r.job_id}（${r.mode === 'mock' ? '模拟模式' : '真实模式'}）`);
+        this.startRevPoll(r.job_id);
+      } catch (e) { this.handleErr(e); }
+      finally { this.revBusy = false; }
+    },
+    startRevPoll(jobId) {
+      this.stopRevPoll();
+      this.revJobPoll = setInterval(async () => {
+        try {
+          const j = await api('GET', '/api/reviews/job?job_id=' + encodeURIComponent(jobId));
+          if (j.status === 'done') {
+            this.stopRevPoll();
+            this.notify('抓取完成，数据已入库');
+          } else if (j.status === 'error') {
+            this.stopRevPoll();
+            this.errToast = '抓取失败：' + (j.error || '未知错误');
+          }
+          this.loadReviewsOverview();
+        } catch { /* 轮询期间网络抖动忽略 */ }
+      }, 4000);
+    },
+    stopRevPoll() { if (this.revJobPoll) { clearInterval(this.revJobPoll); this.revJobPoll = null; } },
+    revStar(n) { return '★'.repeat(Math.max(0, Math.round(n))) + '☆'.repeat(Math.max(0, 5 - Math.round(n))); },
+
     async loadStats() { try { this.stats = await api('GET', '/api/stats'); } catch (e) { this.handleErr(e); } },
     async loadSites() {
       if (this.sites.length) return;
@@ -520,8 +609,14 @@ const App = {
     <div class="logo">AMZ Data Hub<small>数据 MCP 基座</small></div>
     <nav class="nav">
       <template v-for="g in navGroups" :key="g.key">
-        <div class="nav-group">{{g.label}} <span v-if="g.key!=='system'" class="nav-core" :title="g.core?'核心模块（恒启用）':'可选模块'">{{g.core?'core':'opt'}}</span></div>
-        <a v-for="it in g.items" :key="it.route" :class="{on:route===it.route}" :href="'#'+it.route">{{it.icon}} {{it.label}}</a>
+        <button class="nav-group" @click="toggleGroup(g.key)" :title="g.collapsed?'展开分组':'收起分组'">
+          <span class="chev" :class="{closed:g.collapsed}">▾</span>
+          <span>{{g.icon}} {{g.label}}</span>
+          <span v-if="g.key!=='system'" class="nav-core" :title="g.core?'核心模块（恒启用）':'可选模块'">{{g.core?'core':'opt'}}</span>
+        </button>
+        <template v-if="!g.collapsed">
+          <a v-for="it in g.items" :key="it.route" :class="{on:route===it.route}" :href="'#'+it.route">{{it.icon}} {{it.label}}</a>
+        </template>
       </template>
     </nav>
     <div class="mcp-hint" style="padding:14px 18px;font-size:11px;color:#5d6b81">
@@ -566,6 +661,125 @@ const App = {
             开启方式：环境变量 <span class="mono">{{switchVar}}={{m.id}}</span>
           </div>
         </div>
+      </div>
+    </template>
+
+    <!-- ==================== REVIEWS (negative intelligence) ==================== -->
+    <template v-if="route==='reviews'">
+      <!-- 模式提示条 -->
+      <div v-if="revOverview" class="card rev-mode" :class="revOverview.mode==='mock'?'is-mock':'is-live'">
+        <span v-if="revOverview.mode==='mock'">🧪 <b>模拟模式</b>：抓取返回假数据、不产生费用。设置 <span class="mono">APIFY_MODE=apify</span> + <span class="mono">APIFY_TOKEN</span> 即为真实抓取。</span>
+        <span v-else>🔴 <b>真实模式</b>：每次抓取调用付费 Apify actor，受全服日限保护（今日 {{revOverview.governance.used_today}}/{{revOverview.governance.global_daily}}，运行中 {{revOverview.governance.running}}）。</span>
+      </div>
+
+      <!-- 抓取控制 -->
+      <div class="card">
+        <h3>抓取 ASIN 差评（≤3 星）</h3>
+        <div class="row">
+          <input v-model="revForm.asin" placeholder="ASIN，如 B0DWF7823H" maxlength="10" style="width:180px;text-transform:uppercase" @keyup.enter="startRevFetch">
+          <select v-model="revForm.country_code" style="width:90px">
+            <option value="US">🇺🇸 US</option><option value="GB">🇬🇧 GB</option><option value="DE">🇩🇪 DE</option>
+            <option value="FR">🇫🇷 FR</option><option value="JP">🇯🇵 JP</option><option value="CA">🇨🇦 CA</option>
+          </select>
+          <input v-model.number="revForm.max_reviews" type="number" min="1" max="100" style="width:110px" title="最多抓取条数">
+          <button class="btn primary" @click="startRevFetch" :disabled="revBusy">{{revBusy?'提交中…':'🚀 抓取差评'}}</button>
+        </div>
+        <p class="muted" style="margin:8px 0 0">抓取在后台异步运行，完成后自动入库；≤3 星在数据源端过滤（计费前），差评数据留存在本地库，后续查询不再花钱。</p>
+      </div>
+
+      <!-- 统计卡 -->
+      <div class="grid cols4" v-if="revOverview">
+        <div class="stat"><div class="l">差评总量</div><div class="v">{{revOverview.totals.total}}</div><div class="sub">≤3 星</div></div>
+        <div class="stat"><div class="l">监控 ASIN</div><div class="v">{{revOverview.totals.asins}}</div><div class="sub">已抓取的产品</div></div>
+        <div class="stat"><div class="l">平均评分</div><div class="v">{{revOverview.totals.avg_rating}}</div><div class="sub">差评样本均分</div></div>
+        <div class="stat"><div class="l">严重差评</div><div class="v" style="color:var(--red)">{{revOverview.totals.negative2}}</div><div class="sub">1–2 星</div></div>
+      </div>
+
+      <!-- 按 ASIN 概览 -->
+      <div class="card" v-if="revOverview && revOverview.perAsin.length">
+        <h3>按 ASIN 概览</h3>
+        <table>
+          <thead><tr><th>ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th></tr></thead>
+          <tbody>
+            <tr v-for="a in revOverview.perAsin" :key="a.asin" @click="pickRevAsin(a.asin)" style="cursor:pointer"
+                :style="revFilters.asin===a.asin?'background:var(--primary-weak)':''">
+              <td class="mono"><b>{{a.asin}}</b></td><td>{{a.country_code}}</td>
+              <td class="num">{{a.total}}</td><td class="num">{{a.avg_rating}}</td>
+              <td class="num" style="color:var(--red)">{{a.negative2}}</td><td class="muted">{{fmtDate(a.latest_review)}}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 单 ASIN 摘要 -->
+      <template v-if="revSummary">
+        <div class="grid cols2">
+          <div class="card">
+            <h3>评分分布 · <span class="mono">{{revSummary.asin}}</span></h3>
+            <template v-if="revSummary.current && revSummary.current.total">
+              <div v-for="s in [{k:'s1',label:'1 星'},{k:'s2',label:'2 星'},{k:'s3',label:'3 星'}]" :key="s.k" class="rev-bar-row">
+                <span class="rev-bar-label">{{s.label}}</span>
+                <div class="progress" style="flex:1"><i :style="{width:(revSummary.current[s.k]/revSummary.current.total*100)+'%',background:s.k==='s1'?'var(--red)':s.k==='s2'?'var(--amber)':'#94a3b8'}"></i></div>
+                <span class="rev-bar-num">{{revSummary.current[s.k] || 0}}</span>
+              </div>
+            </template>
+            <div v-else class="muted">暂无数据</div>
+            <div class="muted" style="margin-top:10px">平均 {{revSummary.current?.avg_rating || 0}} · 共 {{revSummary.current?.total || 0}} 条差评</div>
+          </div>
+          <div class="card">
+            <h3>高频抱怨词</h3>
+            <div v-if="revSummary.topKeywords && revSummary.topKeywords.length" class="rev-kw-cloud">
+              <span v-for="k in revSummary.topKeywords" :key="k.word" class="rev-kw" :style="{fontSize:Math.min(18,11+k.count*1.5)+'px'}">{{k.word}} <small>×{{k.count}}</small></span>
+            </div>
+            <div v-else class="muted">暂无足够文本</div>
+          </div>
+        </div>
+        <div class="card" v-if="revSummary.trend && revSummary.trend.length">
+          <h3>抓取趋势</h3>
+          <table><thead><tr><th>时间</th><th class="num">差评数</th><th class="num">均分</th><th>分布</th></tr></thead><tbody>
+            <tr v-for="t in revSummary.trend" :key="t.fetched_at">
+              <td class="muted">{{fmtDate(t.fetched_at)}}</td><td class="num">{{t.total_reviews}}</td><td class="num">{{t.avg_rating}}</td>
+              <td class="muted mono" style="font-size:11px">{{JSON.stringify(t.dist)}}</td>
+            </tr>
+          </tbody></table>
+        </div>
+      </template>
+
+      <!-- 差评列表 -->
+      <div class="card">
+        <h3>差评明细 <span v-if="revList" class="muted" style="font-weight:400">（共 {{revList.total}} 条）</span></h3>
+        <div class="filters">
+          <select v-model="revFilters.asin" @change="pickRevAsin(revFilters.asin)">
+            <option value="">全部 ASIN</option>
+            <option v-for="a in (revOverview?.perAsin||[])" :key="a.asin" :value="a.asin">{{a.asin}} ({{a.total}})</option>
+          </select>
+          <select v-model="revFilters.rating" @change="revPage=0;loadReviewsList()">
+            <option value="">全部星级</option><option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option>
+          </select>
+          <input v-model="revFilters.keyword" placeholder="搜标题/正文" @keyup.enter="revPage=0;loadReviewsList()">
+          <button class="btn sm" @click="revPage=0;loadReviewsSummary();loadReviewsList()">筛选</button>
+        </div>
+        <div v-if="revList && revList.items.length" class="rev-list">
+          <div v-for="r in revList.items" :key="r.review_id" class="rev-item">
+            <div class="rev-item-head">
+              <span class="rev-stars" :title="r.rating+' 星'">{{revStar(r.rating)}}</span>
+              <b v-if="r.title">{{r.title}}</b><span v-else class="muted">（无标题）</span>
+              <span v-if="r.is_verified" class="tag green">Verified</span>
+              <span class="muted mono" style="margin-left:auto">{{r.asin}} · {{fmtDate(r.review_date)}}</span>
+            </div>
+            <div class="rev-body">{{r.body}}</div>
+            <div class="rev-item-foot">
+              <span class="muted">👍 {{r.helpful_votes}} · {{r.author || '匿名'}}</span>
+              <a v-if="r.review_url" :href="r.review_url" target="_blank" rel="noopener">查看原文 ↗</a>
+            </div>
+          </div>
+          <div class="pager row" style="justify-content:center;margin-top:14px">
+            <button class="btn sm" :disabled="revPage<=0" @click="revPage--;loadReviewsList()">上一页</button>
+            <span class="muted">第 {{revPage+1}} 页</span>
+            <button class="btn sm" :disabled="(revPage+1)*30 >= (revList?.total||0)" @click="revPage++;loadReviewsList()">下一页</button>
+          </div>
+        </div>
+        <div v-else class="empty">{{revList?'暂无差评数据，先在上方抓取一个 ASIN':'加载中…'}}</div>
       </div>
     </template>
 

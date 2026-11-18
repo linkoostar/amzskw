@@ -11,6 +11,7 @@
  */
 
 import type { ApiKeyRow } from '../credits.js';
+import type { FastifyInstance } from 'fastify';
 
 /** 构造工具时的请求级上下文：handler 闭包需要绑定本次调用的 key / clientId。 */
 export interface ToolBuildContext {
@@ -38,6 +39,8 @@ export interface ModuleContract {
   version: string;
   /** 每次请求构造该模块贡献的工具集合。 */
   buildTools: (ctx: ToolBuildContext) => ToolContribution[];
+  /** 该模块贡献的后台管理 API 路由注册回调（仅启用时被调用，session 鉴权由核心统一保护）。 */
+  registerAdminApi?: (app: FastifyInstance) => void;
   /** 该模块贡献的后台 API 路由（P4 使用）。 */
   routes?: unknown[];
   /** 该模块的定时抓取任务（后续阶段使用）。 */

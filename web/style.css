@@ -156,6 +156,34 @@ textarea{resize:vertical;min-height:110px;font-family:ui-monospace,monospace;fon
 .tool-desc{color:var(--muted);font-size:11.5px;flex:1 1 100%;line-height:1.55;margin-top:2px;white-space:normal}
 .mod-foot{font-size:11.5px;color:var(--muted);border-top:1px dashed var(--border);padding-top:8px}
 
+/* 侧边栏可折叠分组 */
+button.nav-group{display:flex;width:100%;align-items:center;gap:6px;padding:12px 12px 5px;font:inherit;font-size:11px;font-weight:700;
+  letter-spacing:.04em;color:#8492a8;background:none;border:none;text-align:left;cursor:pointer;text-transform:uppercase}
+button.nav-group:hover{color:#cdd5e1}
+button.nav-group .chev{display:inline-block;font-size:10px;transition:transform .15s;color:#5d6b81}
+button.nav-group .chev.closed{transform:rotate(-90deg)}
+button.nav-group .nav-core{margin-left:auto}
+
+/* 差评情报页 */
+.rev-mode{padding:12px 16px;font-size:12.5px}
+.rev-mode.is-mock{background:#f0f9ff;border-color:#bae6fd;color:#0369a1}
+.rev-mode.is-live{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+.rev-bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.rev-bar-label{width:42px;font-size:12px;color:var(--muted)}
+.rev-bar-num{width:28px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
+.rev-kw-cloud{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.rev-kw{display:inline-block;padding:3px 9px;background:var(--primary-weak);color:var(--primary);border-radius:14px;font-weight:600;line-height:1.4}
+.rev-kw small{font-weight:400;color:var(--muted);font-size:10px}
+.rev-list{display:flex;flex-direction:column;gap:10px}
+.rev-item{border:1px solid var(--border);border-radius:9px;padding:11px 13px;background:#fff}
+.rev-item-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.rev-stars{color:var(--amber);font-size:13px;letter-spacing:1px;white-space:nowrap}
+.rev-body{font-size:12.5px;color:#475569;margin:7px 0;line-height:1.6;white-space:pre-wrap}
+.rev-item-foot{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;gap:10px}
+.rev-item-foot a{color:var(--primary);text-decoration:none}
+.rev-item-foot a:hover{text-decoration:underline}
+tr[style*="cursor:pointer"]:hover td{background:var(--primary-weak)}
+
 @media(max-width:560px){
   .cols4,.cols3,.cols2{grid-template-columns:1fr}
   .topbar h1{font-size:17px}

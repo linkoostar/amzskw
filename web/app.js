@@ -47,6 +47,8 @@ const App = {
       // watched ASIN list + changes
       watchList: null, watchForm: { asin: '', country_code: 'US', note: '' }, watchBusy: false,
       changes: null, changesAsin: '', changesHours: 720,
+      // purge management (aligned with lexicon seed purge)
+      purgePreview: null, purgeBusy: '',
       // apify token pool
       tokenData: null, tokenForm: { label: '', token: '', priority: 0, quota_limit_usd: 0 }, tokenBusy: false,
       // settings ownership: each admin page saves only its own keys (no cross-page overwrite)
@@ -312,9 +314,42 @@ const App = {
       catch (e) { this.handleErr(e); }
     },
     async delWatch(w) {
-      if (!confirm(`从监控清单移除 ${w.asin}？（已入库差评会保留）`)) return;
-      try { await api('DELETE', '/api/reviews/watch/' + w.id); this.notify('已移除'); this.loadWatch(); }
-      catch (e) { this.handleErr(e); }
+      // 对齐联想词种子删除：先问是否彻底清除，再问是否确认移除
+      let pv = null;
+      try { pv = await api('GET', '/api/reviews/watch/' + w.id + '/purge-preview'); } catch {}
+      const detail = pv ? `\n\n当前该 ASIN 库内有：差评 ${pv.reviews} 条、快照 ${pv.snapshots} 条、抓取记录 ${pv.jobs} 条。` : '';
+      if (!confirm(`移除监控 ASIN「${w.asin}」？${detail}\n\n【确定】= 仅移除监控，已入库差评保留（可继续在差评库查看）\n【取消】= 不操作`)) return;
+      const purge = pv && (pv.reviews || pv.snapshots || pv.jobs)
+        ? confirm(`是否同时彻底清除「${w.asin}」的全部差评数据与抓取历史？\n\n【确定】= 彻底清除（差评/快照/抓取记录全删，不可恢复；之后重抓将从头算作新增）\n【取消】= 仅移除监控，保留数据`)
+        : false;
+      try {
+        const r = await api('DELETE', '/api/reviews/watch/' + w.id + (purge ? '?purge=1' : ''));
+        this.notify(purge
+          ? `已移除监控并清除该 ASIN 数据（差评 ${r.removed?.reviews||0} 条 / 快照 ${r.removed?.snapshots||0} 条）`
+          : '已移除监控（差评数据保留）');
+        if (this.revFilters.asin === w.asin) { this.revFilters.asin = ''; this.revSummary = null; }
+        this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+    },
+    // 差评库/概览页：清理已入库差评数据（针对可能已移出监控的 ASIN）
+    async purgeData(asin) {
+      const a = String(asin || '').trim().toUpperCase();
+      if (!a) return;
+      let pv;
+      try { pv = await api('GET', '/api/reviews/data/purge-preview?asin=' + encodeURIComponent(a)); }
+      catch (e) { this.handleErr(e); return; }
+      if (!pv.reviews && !pv.snapshots) { this.notify('该 ASIN 没有可清除的差评数据'); return; }
+      if (!confirm(`彻底清除 ASIN「${a}」的差评数据？\n\n将删除：差评 ${pv.reviews} 条、快照 ${pv.snapshots} 条、抓取记录 ${pv.jobs} 条。\n监控清单不受影响（若仍在监控，下次重抓会重新入库）。\n\n此操作不可恢复；清除后重抓将从头算作新增。`)) return;
+      this.purgeBusy = a;
+      try {
+        const r = await api('DELETE', '/api/reviews/data', { asin: a });
+        this.notify(`已清除「${a}」：差评 ${r.removed?.reviews||0} 条 / 快照 ${r.removed?.snapshots||0} 条`);
+        if (this.revFilters.asin === a) { this.revFilters.asin = ''; this.revSummary = null; }
+        this.loadReviewsOverview();
+        if (this.route === 'reviewlib') this.loadLib();
+        if (this.route === 'reviewwatch') this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+      finally { this.purgeBusy = ''; }
     },
     async fetchWatch(w) {
       try {
@@ -867,15 +902,16 @@ const App = {
 
       <!-- 按 ASIN 概览 -->
       <div class="card" v-if="revOverview && revOverview.perAsin.length">
-        <h3>按 ASIN 概览</h3>
+        <h3>按 ASIN 概览 <span class="muted" style="font-weight:400;font-size:12px">— 点行查看，点「清除」删除该 ASIN 的全部差评数据</span></h3>
         <table>
-          <thead><tr><th>ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th></tr></thead>
+          <thead><tr><th>ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th><th style="width:70px">操作</th></tr></thead>
           <tbody>
             <tr v-for="a in revOverview.perAsin" :key="a.asin" @click="pickRevAsin(a.asin)" style="cursor:pointer"
                 :style="revFilters.asin===a.asin?'background:var(--primary-weak)':''">
               <td class="mono"><b>{{a.asin}}</b></td><td>{{a.country_code}}</td>
               <td class="num">{{a.total}}</td><td class="num">{{a.avg_rating}}</td>
               <td class="num" style="color:var(--red)">{{a.negative2}}</td><td class="muted">{{fmtDate(a.latest_review)}}</td>
+              <td><button class="btn sm danger" :disabled="purgeBusy===a.asin" @click.stop="purgeData(a.asin)">{{purgeBusy===a.asin?'清除中…':'清除'}}</button></td>
             </tr>
           </tbody>
         </table>
@@ -966,8 +1002,9 @@ const App = {
             <option value="">全部星级</option><option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option>
           </select>
           <button class="btn primary" @click="libSearch">搜索</button>
+          <button v-if="libFilters.asin" class="btn sm danger" :disabled="purgeBusy===libFilters.asin" @click="purgeData(libFilters.asin)" title="彻底清除该 ASIN 的全部差评数据（不影响监控清单）">{{purgeBusy===libFilters.asin?'清除中…':'清除该 ASIN 数据'}}</button>
         </div>
-        <p class="muted" style="margin-top:8px">差评库 = 所有已入库 ≤3 星差评的去重合集，可跨 ASIN 直接检索，无需先选产品。点 ASIN 进入该产品的差评情报。</p>
+        <p class="muted" style="margin-top:8px">差评库 = 所有已入库 ≤3 星差评的去重合集，可跨 ASIN 直接检索，无需先选产品。点 ASIN 进入该产品的差评情报。选中具体 ASIN 后可「清除该 ASIN 数据」（清除后重抓从头算新增）。</p>
       </div>
       <div class="card" v-if="libList">
         <p class="muted" style="margin-bottom:10px">共 {{libList.total}} 条</p>
@@ -1026,7 +1063,7 @@ const App = {
               <td>
                 <button class="btn sm" @click="fetchWatch(w)" title="立即重抓">抓取</button>
                 <button class="btn sm" @click="toggleWatch(w)" style="margin-left:4px">{{w.status==='active'?'暂停':'启用'}}</button>
-                <button class="btn sm danger" @click="delWatch(w)" style="margin-left:4px">移除</button>
+                <button class="btn sm danger" @click="delWatch(w)" style="margin-left:4px" title="移除监控，可选同时彻底清除该 ASIN 的差评数据">移除</button>
               </td>
             </tr>
           </tbody>

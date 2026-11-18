@@ -267,9 +267,61 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
     return { ok: true };
   });
 
-  app.delete('/api/reviews/watch/:id', async (req) => {
-    getDb().prepare('DELETE FROM review_watch WHERE id = ?').run(Number((req.params as any).id));
-    return { ok: true };
+  // 预览按 ASIN 彻底清除会影响的数据量（不改动任何数据）
+  function purgePreview(asin: string) {
+    const db = getDb();
+    const reviews = (db.prepare('SELECT COUNT(*) AS n FROM reviews WHERE asin = ?').get(asin) as { n: number }).n;
+    const snapshots = (db.prepare('SELECT COUNT(*) AS n FROM reviews_snapshot WHERE asin = ?').get(asin) as { n: number }).n;
+    const jobs = (db.prepare(
+      "SELECT COUNT(*) AS n FROM review_jobs WHERE json_extract(args, '$.asin') = ?",
+    ).get(asin) as { n: number }).n;
+    return { asin, reviews, snapshots, jobs };
+  }
+
+  // 事务化彻底清除某 ASIN 的全部差评数据 + 可选的监控记录
+  function purgeAsinData(asin: string, alsoWatch: boolean) {
+    const db = getDb();
+    const tx = db.transaction(() => {
+      const r1 = db.prepare('DELETE FROM reviews WHERE asin = ?').run(asin).changes;
+      const r2 = db.prepare('DELETE FROM reviews_snapshot WHERE asin = ?').run(asin).changes;
+      const r3 = db.prepare("DELETE FROM review_jobs WHERE json_extract(args, '$.asin') = ?").run(asin).changes;
+      const r4 = alsoWatch ? db.prepare('DELETE FROM review_watch WHERE asin = ?').run(asin).changes : 0;
+      return { reviews: r1, snapshots: r2, jobs: r3, watch: r4 };
+    });
+    return tx();
+  }
+
+  app.get('/api/reviews/watch/:id/purge-preview', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const row = getDb().prepare('SELECT asin FROM review_watch WHERE id = ?').get(id) as { asin: string } | undefined;
+    if (!row) return reply.code(404).send({ error: 'watch not found' });
+    return purgePreview(row.asin);
+  });
+
+  // 独立清理入口：针对已移出监控、但数据仍在的 ASIN（差评库/概览页用）
+  app.get('/api/reviews/data/purge-preview', async (req) => {
+    const asin = validAsin((req.query as any)?.asin);
+    if (!asin) return { error: 'valid asin required' };
+    return purgePreview(asin);
+  });
+  app.delete('/api/reviews/data', async (req, reply) => {
+    const asin = validAsin((req.body as any)?.asin);
+    if (!asin) return reply.code(400).send({ error: 'ASIN 必须是 10 位字母/数字' });
+    const removed = purgeAsinData(asin, false);
+    return { ok: true, asin, removed };
+  });
+
+  app.delete('/api/reviews/watch/:id', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const purge = (req.query as any)?.purge === '1';
+    const row = getDb().prepare('SELECT asin FROM review_watch WHERE id = ?').get(id) as { asin: string } | undefined;
+    if (!row) return { ok: true };
+    if (purge) {
+      const removed = purgeAsinData(row.asin, true);
+      return { ok: true, purged: 1, removed };
+    }
+    getDb().prepare('DELETE FROM review_watch WHERE id = ?').run(id);
+    return { ok: true, purged: 0 };
   });
 
   // 重抓单个监控 ASIN

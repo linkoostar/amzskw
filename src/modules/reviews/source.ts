@@ -55,8 +55,11 @@ export interface FetchResult {
   meta: { mode: 'mock' | 'apify'; source: string; fetchedAt: string; totalReturned: number };
 }
 
+import { isMockMode as poolIsMock, selectToken, markUsed, markFailed, type SelectedToken } from './token-pool.js';
+
+/** 双模式：settings 优先、env 兜底（P4）。保留原函数名，内部委派到 token-pool。 */
 export function isMockMode(): boolean {
-  return (process.env.APIFY_MODE ?? 'mock').toLowerCase() !== 'apify';
+  return poolIsMock();
 }
 
 /** Build the actor input from a product URL. Rating filter is passed to the actor so
@@ -139,10 +142,17 @@ const ACTOR = 'junglee/amazon-reviews-scraper';
 const RUN_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 3_000;
 
-function apifyHeaders(): Record<string, string> {
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error('APIFY_TOKEN is not set; set it in the server environment to use APIFY_MODE=apify');
+function apifyHeaders(token: string): Record<string, string> {
+  if (!token) throw new Error('No Apify token configured; set it in web settings (apify_token / token pool) or the APIFY_TOKEN environment variable');
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+}
+
+/** 启动阶段失败（认证/额度/限流），可被上层换 token 重试。 */
+export class ApifyStartError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+    this.name = 'ApifyStartError';
+  }
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -151,17 +161,25 @@ async function sleep(ms: number): Promise<void> {
 
 /** Start an actor run, poll until it finishes, then read its dataset. All rows are
  *  already filtered to <=3 stars by the actor input, so no local re-filter needed. */
-export async function apifyFetch(asin: string, countryCode: string, maxReviews: number): Promise<FetchResult> {
+export async function apifyFetch(asin: string, countryCode: string, maxReviews: number, token: string): Promise<FetchResult> {
   const productUrl = asinToProductUrl(asin, countryCode);
   const input = buildApifyInput(productUrl, maxReviews);
   const started = Date.now();
   const startedIso = new Date(started).toISOString();
+  const headers = apifyHeaders(token);
 
   const startRes = await fetch(
     `${APIFY_BASE}/acts/${encodeURIComponent(ACTOR)}/runs?maxTotalChargeUsd=1`,
-    { method: 'POST', headers: apifyHeaders(), body: JSON.stringify(input) },
+    { method: 'POST', headers, body: JSON.stringify(input) },
   );
-  if (!startRes.ok) throw new Error(`Apify start run failed: HTTP ${startRes.status} ${(await startRes.text()).slice(0, 200)}`);
+  if (!startRes.ok) {
+    const body = (await startRes.text()).slice(0, 200);
+    // 401/402/403/429 = 换 token 可救；其余是 input/服务问题，换 token 无意义。
+    if ([401, 402, 403, 429].includes(startRes.status)) {
+      throw new ApifyStartError(`Apify start run failed: HTTP ${startRes.status} ${body}`, startRes.status);
+    }
+    throw new Error(`Apify start run failed: HTTP ${startRes.status} ${body}`);
+  }
   const startedRun = (await startRes.json()) as { data?: { id?: string; defaultDatasetId?: string } };
   const runId = startedRun.data?.id;
   if (!runId) throw new Error('Apify start run returned no run id');
@@ -171,7 +189,7 @@ export async function apifyFetch(asin: string, countryCode: string, maxReviews: 
   while (status === 'RUNNING' || status === 'READY') {
     if (Date.now() - started > RUN_TIMEOUT_MS) throw new Error(`Apify run ${runId} timed out after ${RUN_TIMEOUT_MS / 1000}s`);
     await sleep(POLL_INTERVAL_MS);
-    const stRes = await fetch(`${APIFY_BASE}/actor-runs/${runId}`, { headers: apifyHeaders() });
+    const stRes = await fetch(`${APIFY_BASE}/actor-runs/${runId}`, { headers });
     if (!stRes.ok) throw new Error(`Apify poll failed: HTTP ${stRes.status}`);
     const st = (await stRes.json()) as {
       data?: { status?: string; defaultDatasetId?: string; exitCode?: number };
@@ -184,7 +202,7 @@ export async function apifyFetch(asin: string, countryCode: string, maxReviews: 
   }
   if (!datasetId) throw new Error(`Apify run ${runId} finished but returned no dataset id`);
 
-  const itemsRes = await fetch(`${APIFY_BASE}/datasets/${datasetId}/items?clean=true&format=json`, { headers: apifyHeaders() });
+  const itemsRes = await fetch(`${APIFY_BASE}/datasets/${datasetId}/items?clean=true&format=json`, { headers });
   if (!itemsRes.ok) throw new Error(`Apify dataset read failed: HTTP ${itemsRes.status}`);
   const rows = (await itemsRes.json()) as ApifyRow[];
   // Defensive local filter: keep <=3 even if the actor ignores filterByRatings for a site.
@@ -199,12 +217,34 @@ export async function apifyFetch(asin: string, countryCode: string, maxReviews: 
   };
 }
 
-/** Public fetch entry: dispatches to mock or real Apify by mode. */
+/** Public fetch entry: dispatches to mock or real Apify by mode.
+ *  Real mode selects a token from the pool; on a start-stage auth/quota/limit error it
+ *  cools that token and retries with the next one. A run already started is never
+ *  re-tried on another token (dataset belongs to the originating account). */
 export async function fetchNegativeReviews(
   asin: string,
   countryCode: string,
   maxReviews: number,
 ): Promise<FetchResult> {
   if (isMockMode()) return mockFetch(asin, countryCode, maxReviews);
-  return apifyFetch(asin, countryCode, maxReviews);
+
+  const attempted = new Set<number>();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const tok: SelectedToken | null = selectToken();
+    if (!tok) throw new Error('No Apify token available (pool empty/exhausted or apify_token not configured)');
+    if (attempted.has(tok.id)) break; // 所有可用 token 都试过且失败
+    attempted.add(tok.id);
+    try {
+      const result = await apifyFetch(asin, countryCode, maxReviews, tok.token);
+      markUsed(tok.id, result.reviews.length);
+      (result.meta as any).tokenId = tok.id;
+      (result.meta as any).tokenLabel = tok.label;
+      return result;
+    } catch (e) {
+      markFailed(tok.id, (e as Error).message, e instanceof ApifyStartError ? e.status : undefined);
+      if (!(e instanceof ApifyStartError)) throw e; // 非启动错误：不换 token，直接失败
+      // ApifyStartError：冷却后换下一个 token 重试
+    }
+  }
+  throw new Error('All Apify tokens failed at start stage (auth/quota/rate-limit); review token pool status');
 }

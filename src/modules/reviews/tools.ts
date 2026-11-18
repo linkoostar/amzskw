@@ -17,6 +17,7 @@ import { getDb, getSettingNum } from '../../db.js';
 import { billable, McpToolError } from '../../core/mcp-helpers.js';
 import type { ApiKeyRow } from '../../credits.js';
 import { isMockMode } from './source.js';
+import { maxConcurrent } from './token-pool.js';
 import { createJob, getJob, countRunningJobs, runReviewJob, type ReviewJobArgs } from './jobs.js';
 import type { ToolBuildContext, ToolContribution } from '../types.js';
 
@@ -56,8 +57,8 @@ function reviewsLiveGuard(key: ApiKeyRow, clientId: string): void {
   if (global >= globalCap) {
     throw new McpToolError(`server-wide reviews-fetch daily cap reached (${global}/${globalCap}). Resets at UTC midnight. Query stored data with reviews_query instead.`);
   }
-  if (countRunningJobs() >= 2) {
-    throw new McpToolError('another review fetch job is still running (max 2 concurrent server-wide). Poll reviews_get_job and retry later.');
+  if (countRunningJobs() >= maxConcurrent()) {
+    throw new McpToolError(`another review fetch job is still running (max ${maxConcurrent()} concurrent server-wide). Poll reviews_get_job and retry later.`);
   }
 }
 
@@ -215,6 +216,62 @@ export function buildReviewsTools({ key, clientId }: ToolBuildContext): ToolCont
         params.push(Math.min(100, Math.max(1, args.limit ?? 30)));
         const items = db.prepare(sql).all(...params);
         return { since_hours: hours, asin: args.asin ?? null, total: items.length, items };
+      }),
+    },
+    {
+      name: 'reviews_watch_list',
+      description:
+        'List the monitored ASIN watch list (products tracked over time for negative-review changes). ' +
+        'Reads local data only — no external call. Use with reviews_changes to see how each product\'s reviews evolved.',
+      inputSchema: {},
+      handler: billable(key, clientId, 'reviews_watch_list', async () => {
+        const items = getDb().prepare(
+          `SELECT asin, country_code, status, note, last_fetched_at, last_new_count, created_at
+           FROM review_watch ORDER BY status DESC, id DESC`,
+        ).all();
+        return { total: (items as unknown[]).length, items };
+      }),
+    },
+    {
+      name: 'reviews_changes',
+      description:
+        'How negative reviews changed across fetch runs: per-snapshot deltas (total/negative/avg rating) and ' +
+        'reviews newly first-seen in the last N hours. Reads stored snapshots only — no external call. ' +
+        'Omit asin to see changes across all monitored products.',
+      inputSchema: {
+        asin: z.string().optional().describe('Filter by exact ASIN (omit for all)'),
+        hours: z.number().optional().default(720).describe('Window for newly-seen reviews (default 720 = 30 days)'),
+      },
+      handler: billable(key, clientId, 'reviews_changes', async (args: { asin?: string; hours?: number }) => {
+        const db = getDb();
+        const asin = args.asin?.trim().toUpperCase() ?? '';
+        const hours = Math.min(8760, Math.max(1, args.hours ?? 720));
+        const snaps = db.prepare(
+          `SELECT asin, fetched_at, total_reviews, negative_reviews, avg_rating
+           FROM reviews_snapshot ${asin ? 'WHERE asin = ?' : ''} ORDER BY asin, fetched_at DESC`,
+        ).all(...(asin ? [asin] : [])) as Array<Record<string, unknown>>;
+        const byAsin: Record<string, any[]> = {};
+        for (const s of snaps) (byAsin[String(s.asin)] ??= []).push(s);
+        const timeline: Array<Record<string, unknown>> = [];
+        for (const [a, list] of Object.entries(byAsin)) {
+          for (let i = 0; i < Math.min(list.length, 12); i++) {
+            const cur = list[i]; const prev = list[i + 1];
+            timeline.push({
+              asin: a, fetched_at: cur.fetched_at,
+              total_reviews: cur.total_reviews, negative_reviews: cur.negative_reviews, avg_rating: cur.avg_rating,
+              delta_total: prev ? Number(cur.total_reviews) - Number(prev.total_reviews) : null,
+              delta_negative: prev ? Number(cur.negative_reviews) - Number(prev.negative_reviews) : null,
+              delta_avg: prev ? Number((Number(cur.avg_rating) - Number(prev.avg_rating)).toFixed(2)) : null,
+            });
+          }
+        }
+        const np: any[] = [`-${hours} hours`];
+        let ns = `SELECT review_id, asin, rating, title, body, review_date, first_seen_at FROM reviews
+                  WHERE rating <= 3 AND replace(replace(first_seen_at,'T',' '),'Z','') >= datetime('now', ?)`;
+        if (asin) { ns += ' AND asin = ?'; np.push(asin); }
+        ns += ' ORDER BY first_seen_at DESC LIMIT 100';
+        const newReviews = db.prepare(ns).all(...np);
+        return { asin: asin || null, hours, timeline, newReviews };
       }),
     },
   ];

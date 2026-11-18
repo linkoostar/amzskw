@@ -2,6 +2,7 @@ import { ensureDbDir } from './config.js';
 import { buildServer } from './server.js';
 import { getDb, pruneFetchLog, repairLiveProvenance } from './db.js';
 import { startScheduler } from './scheduler.js';
+import { startReviewsScheduler } from './modules/reviews/scheduler.js';
 import { config } from './config.js';
 
 async function main() {
@@ -33,6 +34,7 @@ async function main() {
     console.warn('[amz-lexicon] WARNING: using default admin password, set ADMIN_PASSWORD env!');
   }
   startScheduler();
+  startReviewsScheduler();
 }
 
 main().catch((e) => {

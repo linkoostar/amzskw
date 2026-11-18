@@ -137,7 +137,7 @@ textarea{resize:vertical;min-height:110px;font-family:ui-monospace,monospace;fon
   table{display:block;overflow-x:auto;white-space:nowrap}
 }
 /* ============ 模块化基座：导航分组 + 模块总览（P2 UI） ============ */
-.nav-group{padding:12px 12px 4px;font-size:11px;font-weight:700;letter-spacing:.04em;color:#7c8aa1;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.nav-group{padding:12px 12px 4px;font-size:13px;font-weight:600;color:#8492a8;display:flex;align-items:center;gap:6px}
 .nav-core{font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;background:#1f2a3c;color:#8ea2bd;letter-spacing:0}
 .tag.muted-tag{background:#eef1f5;color:var(--muted)}
 
@@ -157,8 +157,8 @@ textarea{resize:vertical;min-height:110px;font-family:ui-monospace,monospace;fon
 .mod-foot{font-size:11.5px;color:var(--muted);border-top:1px dashed var(--border);padding-top:8px}
 
 /* 侧边栏可折叠分组 */
-button.nav-group{display:flex;width:100%;align-items:center;gap:6px;padding:12px 12px 5px;font:inherit;font-size:11px;font-weight:700;
-  letter-spacing:.04em;color:#8492a8;background:none;border:none;text-align:left;cursor:pointer;text-transform:uppercase}
+button.nav-group{display:flex;width:100%;align-items:center;gap:6px;padding:12px 12px 5px;font:inherit;font-size:13px;font-weight:600;
+  color:#8492a8;background:none;border:none;text-align:left;cursor:pointer}
 button.nav-group:hover{color:#cdd5e1}
 button.nav-group .chev{display:inline-block;font-size:10px;transition:transform .15s;color:#5d6b81}
 button.nav-group .chev.closed{transform:rotate(-90deg)}

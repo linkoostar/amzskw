@@ -1193,14 +1193,14 @@ const App = {
             <label>重抓随机延迟上限（毫秒）<input v-model="settingsForm.reviews_watch_jitter_max_ms" type="number"></label>
             <label>差评抓取全服每日上限<input v-model="settingsForm.reviews_global_daily" type="number"></label>
           </div>
-        </div>
 
-        <div class="card" v-if="tokenData">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <h3 style="margin:0">Token 池（多账号额度轮换）</h3>
+          <!-- Token 池并入 ASIN 差评模块卡片，明确归属 -->
+          <template v-if="tokenData">
+          <div class="group-title" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+            <span>ASIN 差评 · Token 池（多账号额度轮换）</span>
             <button class="btn sm" :class="tokenData.enabled?'danger':'primary'" @click="togglePool">{{tokenData.enabled?'关闭池（回退单 token）':'启用池'}}</button>
           </div>
-          <p class="muted" style="margin-bottom:12px">
+          <p class="muted" style="margin:8px 0 12px">
             当前模式 <b>{{tokenData.mode}}</b> · 池 {{tokenData.enabled?'已启用':'未启用'}} · 可用 {{tokenData.items.filter(t=>t.enabled&&!t.cooldown_active).length}}/{{tokenData.items.length}} · 单 token {{tokenData.single_token_masked||'未配置'}}
           </p>
           <div class="row" style="margin-bottom:14px;padding:12px;background:#f8fafc;border-radius:8px">
@@ -1234,6 +1234,7 @@ const App = {
           </table>
           <div v-else class="empty">Token 池为空，添加一个账号 token 开始轮换</div>
           <p class="muted" style="margin-top:10px">策略：过滤禁用/冷却/额度耗尽 → 剩余额度多者优先 + 轮询打散。启动阶段遇认证/额度错误自动冷却该 token 并换下一个；一个抓取 run 全程绑定同一 token。token 不明文回显、不进日志。token 增删改即时生效，无需点下方保存。</p>
+          </template>
         </div>
       </template>
       <div class="card" v-else>

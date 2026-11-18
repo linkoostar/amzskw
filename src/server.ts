@@ -6,6 +6,7 @@ import path from 'node:path';
 import { getDb } from './db.js';
 import { registerApi } from './routes.js';
 import { registerMcpEndpoint } from './mcpserver.js';
+import { registerModuleAdminApis } from './modules/catalog.js';
 import { validateAdminSession, SESSION_COOKIE } from './auth.js';
 import { config, PROJECT_ROOT } from './config.js';
 
@@ -39,6 +40,7 @@ export async function buildServer() {
   });
 
   registerApi(app);
+  registerModuleAdminApis(app);
   registerMcpEndpoint(app);
 
   // SPA fallback -> index.html

@@ -19,8 +19,10 @@ const App = {
   data() {
     return {
       authed: false, ready: false, loginPassword: '', loginErr: '',
-      route: 'dashboard',
+      route: 'modules',
       toast: '', errToast: '',
+      // modules (base registry, drives navigation)
+      modules: [], switchVar: 'AMZ_ENABLED_MODULES', navCollapsed: {},
       stats: null,
       sites: [],
       // keywords
@@ -36,6 +38,25 @@ const App = {
       trendKwQuery: '', trendKwOpen: false,
       // lexicon
       lexQuery: '', lexMid: '', lexData: null, lexPage: 0, lexJump: 1, lexSort: 'cnt', lexDir: 'desc',
+      // reviews (negative intelligence)
+      revOverview: null, revList: null, revSummary: null, revJobs: null, revJobPoll: null,
+      revFilters: { asin: '', rating: '', keyword: '' }, revForm: { asin: '', country_code: 'US', max_reviews: 30 },
+      revBusy: false, revPage: 0,
+      // review library (global search across all stored negative reviews)
+      libList: null, libPage: 0, libFilters: { asin: '', rating: '', keyword: '' }, libTotalPages: 1,
+      // watched ASIN list + changes
+      watchList: null, watchForm: { asin: '', country_code: 'US', note: '' }, watchBusy: false,
+      changes: null, changesAsin: '', changesHours: 720,
+      // purge management (aligned with lexicon seed purge)
+      purgePreview: null, purgeBusy: '',
+      // apify token pool
+      tokenData: null, tokenForm: { label: '', token: '', priority: 0, quota_limit_usd: 0 }, tokenBusy: false,
+      // settings ownership: each admin page saves only its own keys (no cross-page overwrite)
+      configKeys: {
+        lexicon: ['suggest_api_url','cron','start_jitter_max_ms','request_delay_min_ms','request_delay_max_ms','pause_chance','pause_min_ms','pause_max_ms','basic_limit','expand_top','alphabet','max_retries','backoff_base_ms','backoff_cap_ms','breaker_threshold','breaker_pause_ms','mcp_live_persist','mcp_live_global_daily','mcp_live_auto_seed','live_seed_min_words','live_seed_max_words','mcp_live_sync_deadline_ms'],
+        reviews: ['apify_mode','apify_token','apify_max_concurrent','reviews_watch_cron','reviews_watch_jitter_max_ms','reviews_global_daily'],
+        base: ['fetch_log_keep_days','mcp_rate_limit_per_min'],
+      },
       // keys
       keyList: [], keyForm: { name: '', credits: 100 }, newKey: null, ledger: null, ledgerName: '',
       // settings
@@ -46,6 +67,7 @@ const App = {
   computed: {
     keywordOptions() { return this.kwList; },
     lexTotalPages() { return this.lexData ? Math.max(1, Math.ceil(this.lexData.total / 50)) : 1; },
+    libTotalPages() { return this.libList ? Math.max(1, Math.ceil(this.libList.total / 30)) : 1; },
     trendKwOptions() {
       const q = this.trendKwQuery.trim().toLowerCase();
       // 输入框内容和选中项一致时不过滤，避免刚选中就被过滤到空列表
@@ -53,6 +75,68 @@ const App = {
       if (sel && this.trendKwQuery === this.trendKwLabel(sel)) return this.kwList.slice(0, 60);
       const list = q ? this.kwList.filter((k) => k.text.toLowerCase().includes(q) || k.mid.toLowerCase().includes(q)) : this.kwList;
       return list.slice(0, 60);
+    },
+    // 哪些现有页面归属于哪个模块（模块 id -> 路由键数组）。
+    // 新增模块只要在这里登记，侧边栏就自动出现对应入口；不改 template。
+    moduleRoutes() {
+      return {
+        lexicon: [
+          { route: 'dashboard', icon: '📊', label: '仪表盘' },
+          { route: 'keywords', icon: '🔑', label: '关键词管理' },
+          { route: 'runs', icon: '🚚', label: '抓取任务' },
+          { route: 'trends', icon: '📈', label: '排名趋势' },
+          { route: 'lexicon', icon: '📚', label: '词库检索' },
+        ],
+        reviews: [
+          { route: 'reviews', icon: '⭐', label: '差评情报' },
+          { route: 'reviewlib', icon: '🗂️', label: '差评库' },
+          { route: 'reviewwatch', icon: '👁️', label: '监控 ASIN' },
+          { route: 'reviewchanges', icon: '📉', label: '变化视图' },
+        ],
+      };
+    },
+    // 侧边栏短名：后端 name 是完整英文句，显示太长会折行；这里给每个模块一个中文短名。
+    moduleShortNames() {
+      return { lexicon: '联想词词库', reviews: 'ASIN 差评', system: '基座管理' };
+    },
+    // 后端模块清单 -> 分组导航。数据模块在前，系统管理在后。
+    navGroups() {
+      const groups = [];
+      const active = this.modules.filter((m) => m.enabled);
+      for (const m of active) {
+        const pages = this.moduleRoutes[m.id];
+        if (!pages) continue; // 已启用但前端尚无页面：只在模块总览展示，不生成空入口
+        const hasActive = pages.some((p) => p.route === this.route);
+        groups.push({
+          key: m.id,
+          label: this.moduleShortNames[m.id] || m.name,
+          icon: m.id === 'reviews' ? '💬' : '🧩',
+          core: m.core,
+          // 默认：当前页所在分组展开、其余折叠；用户手动点过箭头则以手动值为准
+          collapsed: this.navCollapsed[m.id] === undefined ? !hasActive : this.navCollapsed[m.id],
+          items: pages.map((p) => ({ ...p, route: p.route })),
+        });
+      }
+      const sysHasActive = ['modules', 'datasource', 'keys', 'settings'].includes(this.route);
+      groups.push({
+        key: 'system', label: this.moduleShortNames.system, icon: '⚙️', core: true,
+        collapsed: this.navCollapsed.system === undefined ? !sysHasActive : this.navCollapsed.system,
+        items: [
+          { route: 'modules', icon: '🧩', label: '模块总览' },
+          { route: 'datasource', icon: '🔌', label: '数据源配置' },
+          { route: 'keys', icon: '🎫', label: 'API Keys / 计费' },
+          { route: 'settings', icon: '⚙️', label: '系统设置' },
+        ],
+      });
+      return groups;
+    },
+    routeTitle() {
+      // 优先从模块页签找标题，否则用系统路由表
+      for (const g of this.navGroups) {
+        const hit = g.items.find((i) => i.route === this.route);
+        if (hit) return hit.label;
+      }
+      return { modules: '模块总览', datasource: '数据源配置（按模块）', keys: 'API Keys / Credits 计费', settings: '系统设置（基座）' }[this.route] || this.route;
     },
     mcpConfig() {
       if (!this.newKey) return '';
@@ -73,21 +157,32 @@ const App = {
     window.addEventListener('hashchange', () => this.onRoute());
     try { await api('GET', '/api/auth/me').then(r => this.authed = r.authed); } catch {}
     this.ready = true;
-    if (this.authed) this.onRoute(true);
+    if (this.authed) {
+      await this.loadModules();
+      this.onRoute(true);
+    }
   },
   methods: {
     fmtDate, esc,
     nav(r) { location.hash = '#' + r; },
+    toggleGroup(key) { this.navCollapsed[key] = !this.navCollapsed[key]; },
     onRoute(force) {
       if (!this.authed) return;
-      const r = (location.hash.slice(1) || 'dashboard');
+      const r = (location.hash.slice(1) || 'modules');
       this.route = r;
       this.toast = '';
+      if (r !== 'reviews') this.stopRevPoll();
+      if (r === 'modules') return; // 模块总览数据已在 mounted 加载
       if (r === 'dashboard') this.loadStats();
       if (r === 'keywords') this.loadKeywords();
       if (r === 'runs') { this.loadRuns(); this.startPoll(); } else this.stopPoll();
       if (r === 'trends') { this.loadKeywords().then(() => { if (!this.trendKid && this.kwList.length) this.trendKid = this.kwList[0].id; if (this.trendKid) { this.syncTrendKwQuery(); this.loadTrend(); } }); }
       if (r === 'lexicon') this.loadLexicon();
+      if (r === 'reviews') this.loadReviewsOverview();
+      if (r === 'reviewlib') this.loadLib();
+      if (r === 'reviewwatch') this.loadWatch();
+      if (r === 'reviewchanges') this.loadChanges();
+      if (r === 'datasource') this.loadDatasource();
       if (r === 'keys') this.loadKeys();
       if (r === 'settings') this.loadSettings();
       if (r === 'dashboard') this.loadSites();
@@ -99,11 +194,268 @@ const App = {
       try {
         await api('POST', '/api/auth/login', { password: this.loginPassword });
         this.authed = true;
+        await this.loadModules();
         await this.loadSites();
         this.onRoute(true);
       } catch (e) { this.loginErr = '密码错误'; }
     },
     async logout() { await api('POST', '/api/auth/logout'); this.authed = false; },
+
+    async loadModules() {
+      try {
+        const r = await api('GET', '/api/modules');
+        this.modules = r.modules ?? [];
+        this.switchVar = r.switchVar || 'AMZ_ENABLED_MODULES';
+      } catch (e) { this.handleErr(e); }
+    },
+
+    // ---------------- reviews 差评情报 ----------------
+    async loadReviewsOverview() {
+      try {
+        this.revOverview = await api('GET', '/api/reviews/overview');
+        this.revJobs = this.revOverview.jobs || [];
+        // 若有运行中的 job，启动轮询
+        const running = (this.revJobs).find((j) => j.status === 'running');
+        if (running) this.startRevPoll(running.job_id);
+        // 默认选中第一个 ASIN 看摘要
+        const first = this.revOverview.perAsin && this.revOverview.perAsin[0];
+        if (first && !this.revFilters.asin) this.revFilters.asin = first.asin;
+        if (this.revFilters.asin) this.loadReviewsSummary();
+        this.loadReviewsList();
+      } catch (e) { this.handleErr(e); }
+    },
+    async loadReviewsList() {
+      try {
+        const f = this.revFilters;
+        const q = new URLSearchParams({ limit: '30', offset: String(this.revPage * 30) });
+        if (f.asin) q.set('asin', f.asin);
+        if (f.rating) q.set('rating', f.rating);
+        if (f.keyword) q.set('keyword', f.keyword);
+        this.revList = await api('GET', '/api/reviews/list?' + q.toString());
+      } catch (e) { this.handleErr(e); }
+    },
+    async loadReviewsSummary() {
+      if (!this.revFilters.asin) { this.revSummary = null; return; }
+      try {
+        this.revSummary = await api('GET', '/api/reviews/summary?asin=' + encodeURIComponent(this.revFilters.asin));
+      } catch (e) { this.handleErr(e); }
+    },
+    pickRevAsin(asin) {
+      this.revFilters.asin = asin; this.revPage = 0;
+      this.loadReviewsSummary(); this.loadReviewsList();
+    },
+    async startRevFetch() {
+      const f = this.revForm;
+      const asin = String(f.asin || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) { this.errToast = '请输入 10 位 ASIN（如 B0DWF7823H）'; return; }
+      const mode = this.revOverview?.mode || 'mock';
+      if (mode === 'apify' && !confirm('当前为真实 Apify 模式，抓取会产生费用（约几分钱）。确认继续？')) return;
+      this.revBusy = true; this.errToast = '';
+      try {
+        const r = await api('POST', '/api/reviews/fetch', { asin, country_code: f.country_code, max_reviews: f.max_reviews });
+        this.notify(`已提交抓取任务 ${r.job_id}（${r.mode === 'mock' ? '模拟模式' : '真实模式'}）`);
+        // 顺手加入监控清单（幂等：已在则忽略），让"抓取→持续跟踪"闭环
+        try { await api('POST', '/api/reviews/watch', { asin, country_code: f.country_code }); } catch {}
+        this.startRevPoll(r.job_id);
+      } catch (e) { this.handleErr(e); }
+      finally { this.revBusy = false; }
+    },
+    startRevPoll(jobId) {
+      this.stopRevPoll();
+      this.revJobPoll = setInterval(async () => {
+        try {
+          const j = await api('GET', '/api/reviews/job?job_id=' + encodeURIComponent(jobId));
+          if (j.status === 'done') {
+            this.stopRevPoll();
+            this.notify('抓取完成，数据已入库');
+          } else if (j.status === 'error') {
+            this.stopRevPoll();
+            this.errToast = '抓取失败：' + (j.error || '未知错误');
+          }
+          this.loadReviewsOverview();
+        } catch { /* 轮询期间网络抖动忽略 */ }
+      }, 4000);
+    },
+    stopRevPoll() { if (this.revJobPoll) { clearInterval(this.revJobPoll); this.revJobPoll = null; } },
+    revStar(n) { return '★'.repeat(Math.max(0, Math.round(n))) + '☆'.repeat(Math.max(0, 5 - Math.round(n))); },
+
+    // ---------------- review library (global search) ----------------
+    async loadLib() {
+      try {
+        const f = this.libFilters;
+        const q = new URLSearchParams({ limit: '30', offset: String(this.libPage * 30) });
+        if (f.asin) q.set('asin', f.asin.trim().toUpperCase());
+        if (f.rating) q.set('rating', f.rating);
+        if (f.keyword) q.set('keyword', f.keyword);
+        this.libList = await api('GET', '/api/reviews/list?' + q.toString());
+      } catch (e) { this.handleErr(e); }
+    },
+    libSearch() { this.libPage = 0; this.loadLib(); },
+    goAsin(asin) { this.revFilters.asin = asin; location.hash = '#reviews'; },
+
+    // ---------------- watched ASIN list ----------------
+    async loadWatch() {
+      try { this.watchList = await api('GET', '/api/reviews/watch'); } catch (e) { this.handleErr(e); }
+    },
+    async addWatch() {
+      const asin = String(this.watchForm.asin || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) { this.errToast = '请输入 10 位 ASIN'; return; }
+      this.watchBusy = true;
+      try {
+        await api('POST', '/api/reviews/watch', { asin, country_code: this.watchForm.country_code, note: this.watchForm.note });
+        this.notify(`已加入监控：${asin}`);
+        this.watchForm.asin = ''; this.watchForm.note = '';
+        this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+      finally { this.watchBusy = false; }
+    },
+    async toggleWatch(w) {
+      try { await api('PATCH', '/api/reviews/watch/' + w.id, { status: w.status === 'active' ? 'paused' : 'active' }); this.loadWatch(); }
+      catch (e) { this.handleErr(e); }
+    },
+    async delWatch(w) {
+      // 对齐联想词种子删除：先问是否彻底清除，再问是否确认移除
+      let pv = null;
+      try { pv = await api('GET', '/api/reviews/watch/' + w.id + '/purge-preview'); } catch {}
+      const detail = pv ? `\n\n当前该 ASIN 库内有：差评 ${pv.reviews} 条、快照 ${pv.snapshots} 条、抓取记录 ${pv.jobs} 条。` : '';
+      if (!confirm(`移除监控 ASIN「${w.asin}」？${detail}\n\n【确定】= 仅移除监控，已入库差评保留（可继续在差评库查看）\n【取消】= 不操作`)) return;
+      const purge = pv && (pv.reviews || pv.snapshots || pv.jobs)
+        ? confirm(`是否同时彻底清除「${w.asin}」的全部差评数据与抓取历史？\n\n【确定】= 彻底清除（差评/快照/抓取记录全删，不可恢复；之后重抓将从头算作新增）\n【取消】= 仅移除监控，保留数据`)
+        : false;
+      try {
+        const r = await api('DELETE', '/api/reviews/watch/' + w.id + (purge ? '?purge=1' : ''));
+        this.notify(purge
+          ? `已移除监控并清除该 ASIN 数据（差评 ${r.removed?.reviews||0} 条 / 快照 ${r.removed?.snapshots||0} 条）`
+          : '已移除监控（差评数据保留）');
+        if (this.revFilters.asin === w.asin) { this.revFilters.asin = ''; this.revSummary = null; }
+        this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+    },
+    // 差评库/概览页：清理已入库差评数据（针对可能已移出监控的 ASIN）
+    async purgeData(asin) {
+      const a = String(asin || '').trim().toUpperCase();
+      if (!a) return;
+      let pv;
+      try { pv = await api('GET', '/api/reviews/data/purge-preview?asin=' + encodeURIComponent(a)); }
+      catch (e) { this.handleErr(e); return; }
+      if (!pv.reviews && !pv.snapshots) { this.notify('该 ASIN 没有可清除的差评数据'); return; }
+      if (!confirm(`彻底清除 ASIN「${a}」的差评数据？\n\n将删除：差评 ${pv.reviews} 条、快照 ${pv.snapshots} 条、抓取记录 ${pv.jobs} 条。\n监控清单不受影响（若仍在监控，下次重抓会重新入库）。\n\n此操作不可恢复；清除后重抓将从头算作新增。`)) return;
+      this.purgeBusy = a;
+      try {
+        const r = await api('DELETE', '/api/reviews/data', { asin: a });
+        this.notify(`已清除「${a}」：差评 ${r.removed?.reviews||0} 条 / 快照 ${r.removed?.snapshots||0} 条`);
+        if (this.revFilters.asin === a) { this.revFilters.asin = ''; this.revSummary = null; }
+        this.loadReviewsOverview();
+        if (this.route === 'reviewlib') this.loadLib();
+        if (this.route === 'reviewwatch') this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+      finally { this.purgeBusy = ''; }
+    },
+    async fetchWatch(w) {
+      try {
+        const r = await api('POST', '/api/reviews/watch/' + w.id + '/fetch');
+        this.notify(`已提交重抓 ${w.asin}（${r.job_id}）`);
+        this.startRevPoll(r.job_id);
+        setTimeout(() => this.loadWatch(), 1500);
+      } catch (e) { this.handleErr(e); }
+    },
+    async fetchAllWatch() {
+      if (!confirm('批量重抓所有启用监控的 ASIN？真实模式会产生 Apify 费用。')) return;
+      this.watchBusy = true;
+      try {
+        const r = await api('POST', '/api/reviews/watch/fetch-all');
+        this.notify(`已提交 ${r.submitted} 个重抓任务${r.skipped ? `，跳过 ${r.skipped} 个（并发/日限）` : ''}`);
+        this.loadWatch();
+      } catch (e) { this.handleErr(e); }
+      finally { this.watchBusy = false; }
+    },
+
+    // ---------------- changes view ----------------
+    async loadChanges() {
+      try {
+        const q = new URLSearchParams({ hours: String(this.changesHours) });
+        if (this.changesAsin) q.set('asin', this.changesAsin.trim().toUpperCase());
+        this.changes = await api('GET', '/api/reviews/changes?' + q.toString());
+      } catch (e) { this.handleErr(e); }
+    },
+    deltaBadge(n) {
+      if (n === null || n === undefined) return '';
+      if (n > 0) return '+' + n;
+      return String(n);
+    },
+
+    // ---------------- module config ownership helpers ----------------
+    moduleEnabled(id) { const m = this.modules.find(x => x.id === id); return !!(m && m.enabled); },
+    // pick only the keys this page owns, from the shared settingsForm
+    pickKeys(keys) {
+      const out = {};
+      for (const k of keys) if (this.settingsForm[k] !== undefined) out[k] = this.settingsForm[k];
+      return out;
+    },
+
+    // ---------------- apify token pool ----------------
+    async loadTokens() {
+      try { this.tokenData = await api('GET', '/api/reviews/tokens'); } catch (e) { this.handleErr(e); }
+    },
+    async loadDatasource() {
+      try {
+        const d = await api('GET', '/api/settings');
+        this.settingsForm = d.settings;
+        this.pricingRows = d.pricing;
+      } catch (e) { this.handleErr(e); }
+      this.loadTokens();
+    },
+    async saveDsConfig() {
+      // save only keys owned by the datasource page (lexicon module + reviews module)
+      const keys = [...this.configKeys.lexicon, ...this.configKeys.reviews];
+      try {
+        await api('PUT', '/api/settings', { settings: this.pickKeys(keys) });
+        this.notify('数据源配置已保存（settings 优先于环境变量；调度已按新 cron 重载）');
+        this.loadDatasource();
+      } catch (e) { this.handleErr(e); }
+    },
+    async addToken() {
+      const token = String(this.tokenForm.token || '').trim();
+      if (!token) { this.errToast = '请填写 token'; return; }
+      this.tokenBusy = true;
+      try {
+        await api('POST', '/api/reviews/tokens', {
+          label: this.tokenForm.label, token,
+          priority: Number(this.tokenForm.priority) || 0,
+          quota_limit_usd: Number(this.tokenForm.quota_limit_usd) || 0,
+        });
+        this.notify('已添加 token');
+        this.tokenForm = { label: '', token: '', priority: 0, quota_limit_usd: 0 };
+        this.loadTokens();
+      } catch (e) { this.handleErr(e); }
+      finally { this.tokenBusy = false; }
+    },
+    async updateTokenField(t, field, value) {
+      try { await api('PUT', '/api/reviews/tokens/' + t.id, { [field]: value }); this.loadTokens(); }
+      catch (e) { this.handleErr(e); }
+    },
+    async refreshToken(t) {
+      try { const r = await api('POST', '/api/reviews/tokens/' + t.id + '/refresh'); this.notify(r.ok ? '额度已刷新（API）' : 'API 查询失败，仍用手填额度'); this.loadTokens(); }
+      catch (e) { this.handleErr(e); }
+    },
+    async clearCooldown(t) {
+      try { await api('POST', '/api/reviews/tokens/' + t.id + '/cooldown-clear'); this.notify('已清除冷却'); this.loadTokens(); }
+      catch (e) { this.handleErr(e); }
+    },
+    async delToken(t) {
+      if (!confirm(`删除 token「${t.label || t.token_masked}」？`)) return;
+      try { await api('DELETE', '/api/reviews/tokens/' + t.id); this.notify('已删除'); this.loadTokens(); }
+      catch (e) { this.handleErr(e); }
+    },
+    async togglePool() {
+      if (!this.tokenData) return;
+      const next = this.tokenData.enabled ? 0 : 1;
+      try {
+        await api('PUT', '/api/settings', { settings: { apify_token_pool_enabled: String(next) } });
+        this.notify(next ? 'Token 池已启用' : 'Token 池已关闭（回退单 token）');
+        this.loadTokens();
+      } catch (e) { this.handleErr(e); }
+    },
 
     async loadStats() { try { this.stats = await api('GET', '/api/stats'); } catch (e) { this.handleErr(e); } },
     async loadSites() {
@@ -428,8 +780,9 @@ const App = {
       const pricing = {};
       this.pricingRows.forEach(p => pricing[p.tool] = p.price);
       try {
-        await api('PUT', '/api/settings', { settings: this.settingsForm, pricing });
-        this.settingsMsg = '已保存，调度已按新 cron 重新加载';
+        // only submit base keys + pricing; module config belongs to the datasource page
+        await api('PUT', '/api/settings', { settings: this.pickKeys(this.configKeys.base), pricing });
+        this.settingsMsg = '已保存（基座参数与 Tool 定价）';
         setTimeout(() => this.settingsMsg = '', 3500);
         this.loadSettings();
       } catch (e) { this.handleErr(e); }
@@ -449,8 +802,8 @@ const App = {
 <div v-if="!ready"></div>
 <div v-else-if="!authed" class="login-wrap">
   <form class="login" @submit.prevent="login">
-    <h2>AMZ Lexicon</h2>
-    <p>亚马逊搜索联想词词库 · 管理后台</p>
+    <h2>AMZ Data Hub</h2>
+    <p>数据 MCP 基座 · 模块化管理后台</p>
     <div v-if="loginErr" class="err">{{loginErr}}</div>
     <input type="password" v-model="loginPassword" placeholder="管理员密码" autofocus>
     <button class="btn primary" type="submit">登 录</button>
@@ -458,15 +811,18 @@ const App = {
 </div>
 <div v-else class="layout">
   <aside class="sidebar">
-    <div class="logo">AMZ Lexicon<small>亚马逊联想词词库</small></div>
+    <div class="logo">AMZ Data Hub<small>数据 MCP 基座</small></div>
     <nav class="nav">
-      <a :class="{on:route==='dashboard'}" href="#dashboard">📊 仪表盘</a>
-      <a :class="{on:route==='keywords'}" href="#keywords">🔑 关键词管理</a>
-      <a :class="{on:route==='runs'}" href="#runs">🚚 抓取任务</a>
-      <a :class="{on:route==='trends'}" href="#trends">📈 排名趋势</a>
-      <a :class="{on:route==='lexicon'}" href="#lexicon">📚 词库检索</a>
-      <a :class="{on:route==='keys'}" href="#keys">🎫 API Keys / 计费</a>
-      <a :class="{on:route==='settings'}" href="#settings">⚙️ 系统设置</a>
+      <template v-for="g in navGroups" :key="g.key">
+        <button class="nav-group" @click="toggleGroup(g.key)" :title="g.collapsed?'展开分组':'收起分组'">
+          <span class="chev" :class="{closed:g.collapsed}">▾</span>
+          <span>{{g.icon}} {{g.label}}</span>
+          <span v-if="g.key!=='system'" class="nav-core" :title="g.core?'核心模块（恒启用）':'可选模块'">{{g.core?'core':'opt'}}</span>
+        </button>
+        <template v-if="!g.collapsed">
+          <a v-for="it in g.items" :key="it.route" :class="{on:route===it.route}" :href="'#'+it.route">{{it.icon}} {{it.label}}</a>
+        </template>
+      </template>
     </nav>
     <div class="mcp-hint" style="padding:14px 18px;font-size:11px;color:#5d6b81">
       MCP: <span class="mono" style="color:#8ea2bd">POST /mcp</span>
@@ -474,13 +830,423 @@ const App = {
   </aside>
   <main class="main">
     <div class="topbar">
-      <h1>{{ {dashboard:'仪表盘',keywords:'关键词管理',runs:'抓取任务',trends:'排名趋势',lexicon:'词库检索',keys:'API Keys / Credits 计费',settings:'系统设置'}[route] }}</h1>
+      <h1>{{routeTitle}}</h1>
       <div class="userbox">
         <span v-if="toast" class="okmsg">{{toast}}</span>
         <span v-else-if="errToast" class="err">{{errToast}}</span>
         <button class="btn sm" @click="logout">退出</button>
       </div>
     </div>
+
+    <!-- ==================== MODULES OVERVIEW ==================== -->
+    <template v-if="route==='modules'">
+      <div class="card hub-intro">
+        <h3>数据 MCP 基座</h3>
+        <p class="muted">各功能以模块形式接入，统一通过 <span class="mono">POST /mcp</span> 向 agent 分发数据。模块化的收益是：新增数据能力不改核心、默认关闭、按需灰度。</p>
+      </div>
+      <div class="mod-grid">
+        <div class="card mod-card" v-for="m in modules" :key="m.id">
+          <div class="mod-head">
+            <div class="mod-title">{{m.name}}</div>
+            <div class="mod-badges">
+              <span class="tag" :class="m.core?'blue':'muted-tag'" :title="m.core?'核心模块，恒启用':'可选模块，默认关闭'">{{m.core?'core':'optional'}}</span>
+              <span class="tag" :class="m.enabled?'green':'gray'">{{m.enabled?'已启用':'未启用'}}</span>
+            </div>
+          </div>
+          <div class="mod-meta"><span class="mono">id={{m.id}}</span> · v{{m.version}} · {{m.tools.length}} 个 MCP 工具</div>
+          <div class="mod-tools">
+            <div class="mod-tool" v-for="t in m.tools" :key="t.name">
+              <span class="mono tool-name">{{t.name}}</span>
+              <span v-if="t.live" class="tag amber" title="直连外部数据源，受 live 治理管控">live</span>
+              <span class="tool-desc">{{t.description}}</span>
+            </div>
+            <div v-if="!m.tools.length" class="muted" style="font-size:12px">该模块暂无工具</div>
+          </div>
+          <div class="mod-foot" v-if="!m.core">
+            开启方式：环境变量 <span class="mono">{{switchVar}}={{m.id}}</span>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ==================== REVIEWS (negative intelligence) ==================== -->
+    <template v-if="route==='reviews'">
+      <!-- 模式提示条 -->
+      <div v-if="revOverview" class="card rev-mode" :class="revOverview.mode==='mock'?'is-mock':'is-live'">
+        <span v-if="revOverview.mode==='mock'">🧪 <b>模拟模式</b>：抓取返回假数据、不产生费用。设置 <span class="mono">APIFY_MODE=apify</span> + <span class="mono">APIFY_TOKEN</span> 即为真实抓取。</span>
+        <span v-else>🔴 <b>真实模式</b>：每次抓取调用付费 Apify actor，受全服日限保护（今日 {{revOverview.governance.used_today}}/{{revOverview.governance.global_daily}}，运行中 {{revOverview.governance.running}}）。</span>
+      </div>
+
+      <!-- 抓取控制 -->
+      <div class="card">
+        <h3>抓取 ASIN 差评（≤3 星）</h3>
+        <div class="row">
+          <input v-model="revForm.asin" placeholder="ASIN，如 B0DWF7823H" maxlength="10" style="width:180px;text-transform:uppercase" @keyup.enter="startRevFetch">
+          <select v-model="revForm.country_code" style="width:90px">
+            <option value="US">🇺🇸 US</option><option value="GB">🇬🇧 GB</option><option value="DE">🇩🇪 DE</option>
+            <option value="FR">🇫🇷 FR</option><option value="JP">🇯🇵 JP</option><option value="CA">🇨🇦 CA</option>
+          </select>
+          <input v-model.number="revForm.max_reviews" type="number" min="1" max="100" style="width:110px" title="最多抓取条数">
+          <button class="btn primary" @click="startRevFetch" :disabled="revBusy">{{revBusy?'提交中…':'🚀 抓取差评'}}</button>
+        </div>
+        <p class="muted" style="margin:8px 0 0">抓取在后台异步运行，完成后自动入库；≤3 星在数据源端过滤（计费前），差评数据留存在本地库，后续查询不再花钱。</p>
+      </div>
+
+      <!-- 统计卡 -->
+      <div class="grid cols4" v-if="revOverview">
+        <div class="stat"><div class="l">差评总量</div><div class="v">{{revOverview.totals.total}}</div><div class="sub">≤3 星</div></div>
+        <div class="stat"><div class="l">监控 ASIN</div><div class="v">{{revOverview.totals.asins}}</div><div class="sub">已抓取的产品</div></div>
+        <div class="stat"><div class="l">平均评分</div><div class="v">{{revOverview.totals.avg_rating}}</div><div class="sub">差评样本均分</div></div>
+        <div class="stat"><div class="l">严重差评</div><div class="v" style="color:var(--red)">{{revOverview.totals.negative2}}</div><div class="sub">1–2 星</div></div>
+      </div>
+
+      <!-- 按 ASIN 概览 -->
+      <div class="card" v-if="revOverview && revOverview.perAsin.length">
+        <h3>按 ASIN 概览 <span class="muted" style="font-weight:400;font-size:12px">— 点行查看，点「清除」删除该 ASIN 的全部差评数据</span></h3>
+        <table>
+          <thead><tr><th>ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th><th style="width:70px">操作</th></tr></thead>
+          <tbody>
+            <tr v-for="a in revOverview.perAsin" :key="a.asin" @click="pickRevAsin(a.asin)" style="cursor:pointer"
+                :style="revFilters.asin===a.asin?'background:var(--primary-weak)':''">
+              <td class="mono"><b>{{a.asin}}</b></td><td>{{a.country_code}}</td>
+              <td class="num">{{a.total}}</td><td class="num">{{a.avg_rating}}</td>
+              <td class="num" style="color:var(--red)">{{a.negative2}}</td><td class="muted">{{fmtDate(a.latest_review)}}</td>
+              <td><button class="btn sm danger" :disabled="purgeBusy===a.asin" @click.stop="purgeData(a.asin)">{{purgeBusy===a.asin?'清除中…':'清除'}}</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 单 ASIN 摘要 -->
+      <template v-if="revSummary">
+        <div class="grid cols2">
+          <div class="card">
+            <h3>评分分布 · <span class="mono">{{revSummary.asin}}</span></h3>
+            <template v-if="revSummary.current && revSummary.current.total">
+              <div v-for="s in [{k:'s1',label:'1 星'},{k:'s2',label:'2 星'},{k:'s3',label:'3 星'}]" :key="s.k" class="rev-bar-row">
+                <span class="rev-bar-label">{{s.label}}</span>
+                <div class="progress" style="flex:1"><i :style="{width:(revSummary.current[s.k]/revSummary.current.total*100)+'%',background:s.k==='s1'?'var(--red)':s.k==='s2'?'var(--amber)':'#94a3b8'}"></i></div>
+                <span class="rev-bar-num">{{revSummary.current[s.k] || 0}}</span>
+              </div>
+            </template>
+            <div v-else class="muted">暂无数据</div>
+            <div class="muted" style="margin-top:10px">平均 {{revSummary.current?.avg_rating || 0}} · 共 {{revSummary.current?.total || 0}} 条差评</div>
+          </div>
+          <div class="card">
+            <h3>高频抱怨词</h3>
+            <div v-if="revSummary.topKeywords && revSummary.topKeywords.length" class="rev-kw-cloud">
+              <span v-for="k in revSummary.topKeywords" :key="k.word" class="rev-kw" :style="{fontSize:Math.min(18,11+k.count*1.5)+'px'}">{{k.word}} <small>×{{k.count}}</small></span>
+            </div>
+            <div v-else class="muted">暂无足够文本</div>
+          </div>
+        </div>
+        <div class="card" v-if="revSummary.trend && revSummary.trend.length">
+          <h3>抓取趋势</h3>
+          <table><thead><tr><th>时间</th><th class="num">差评数</th><th class="num">均分</th><th>分布</th></tr></thead><tbody>
+            <tr v-for="t in revSummary.trend" :key="t.fetched_at">
+              <td class="muted">{{fmtDate(t.fetched_at)}}</td><td class="num">{{t.total_reviews}}</td><td class="num">{{t.avg_rating}}</td>
+              <td class="muted mono" style="font-size:11px">{{JSON.stringify(t.dist)}}</td>
+            </tr>
+          </tbody></table>
+        </div>
+      </template>
+
+      <!-- 差评列表 -->
+      <div class="card">
+        <h3>差评明细 <span v-if="revList" class="muted" style="font-weight:400">（共 {{revList.total}} 条）</span></h3>
+        <div class="filters">
+          <select v-model="revFilters.asin" @change="pickRevAsin(revFilters.asin)">
+            <option value="">全部 ASIN</option>
+            <option v-for="a in (revOverview?.perAsin||[])" :key="a.asin" :value="a.asin">{{a.asin}} ({{a.total}})</option>
+          </select>
+          <select v-model="revFilters.rating" @change="revPage=0;loadReviewsList()">
+            <option value="">全部星级</option><option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option>
+          </select>
+          <input v-model="revFilters.keyword" placeholder="搜标题/正文" @keyup.enter="revPage=0;loadReviewsList()">
+          <button class="btn sm" @click="revPage=0;loadReviewsSummary();loadReviewsList()">筛选</button>
+        </div>
+        <div v-if="revList && revList.items.length" class="rev-list">
+          <div v-for="r in revList.items" :key="r.review_id" class="rev-item">
+            <div class="rev-item-head">
+              <span class="rev-stars" :title="r.rating+' 星'">{{revStar(r.rating)}}</span>
+              <b v-if="r.title">{{r.title}}</b><span v-else class="muted">（无标题）</span>
+              <span v-if="r.is_verified" class="tag green">Verified</span>
+              <span class="muted mono" style="margin-left:auto">{{r.asin}} · {{fmtDate(r.review_date)}}</span>
+            </div>
+            <div class="rev-body">{{r.body}}</div>
+            <div class="rev-item-foot">
+              <span class="muted">👍 {{r.helpful_votes}} · {{r.author || '匿名'}}</span>
+              <a v-if="r.review_url" :href="r.review_url" target="_blank" rel="noopener">查看原文 ↗</a>
+            </div>
+          </div>
+          <div class="pager row" style="justify-content:center;margin-top:14px">
+            <button class="btn sm" :disabled="revPage<=0" @click="revPage--;loadReviewsList()">上一页</button>
+            <span class="muted">第 {{revPage+1}} 页</span>
+            <button class="btn sm" :disabled="(revPage+1)*30 >= (revList?.total||0)" @click="revPage++;loadReviewsList()">下一页</button>
+          </div>
+        </div>
+        <div v-else class="empty">{{revList?'暂无差评数据，先在上方抓取一个 ASIN':'加载中…'}}</div>
+      </div>
+    </template>
+
+    <!-- ==================== REVIEW LIBRARY (global search) ==================== -->
+    <template v-else-if="route==='reviewlib'">
+      <div class="card">
+        <div class="row">
+          <input v-model="libFilters.keyword" placeholder="全文搜索差评正文/标题" style="flex:1" @keyup.enter="libSearch">
+          <select v-model="libFilters.asin" @change="libSearch">
+            <option value="">全部 ASIN</option>
+            <option v-for="a in (revOverview?.perAsin||[])" :key="a.asin" :value="a.asin">{{a.asin}}</option>
+          </select>
+          <select v-model="libFilters.rating" @change="libSearch">
+            <option value="">全部星级</option><option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option>
+          </select>
+          <button class="btn primary" @click="libSearch">搜索</button>
+          <button v-if="libFilters.asin" class="btn sm danger" :disabled="purgeBusy===libFilters.asin" @click="purgeData(libFilters.asin)" title="彻底清除该 ASIN 的全部差评数据（不影响监控清单）">{{purgeBusy===libFilters.asin?'清除中…':'清除该 ASIN 数据'}}</button>
+        </div>
+        <p class="muted" style="margin-top:8px">差评库 = 所有已入库 ≤3 星差评的去重合集，可跨 ASIN 直接检索，无需先选产品。点 ASIN 进入该产品的差评情报。选中具体 ASIN 后可「清除该 ASIN 数据」（清除后重抓从头算新增）。</p>
+      </div>
+      <div class="card" v-if="libList">
+        <p class="muted" style="margin-bottom:10px">共 {{libList.total}} 条</p>
+        <table v-if="libList.items.length">
+          <thead><tr><th>星级</th><th>标题 / 摘要</th><th>ASIN</th><th>站点</th><th>评论日期</th><th>首次入库</th></tr></thead>
+          <tbody>
+            <tr v-for="r in libList.items" :key="r.review_id">
+              <td><span class="rev-stars" :title="r.rating+' 星'">{{revStar(r.rating)}}</span></td>
+              <td style="max-width:420px"><b>{{r.title||'（无标题）'}}</b><div class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{r.body}}</div></td>
+              <td><a href="#" @click.prevent="goAsin(r.asin)" class="mono">{{r.asin}}</a></td>
+              <td>{{r.country_code}}</td>
+              <td class="muted">{{fmtDate(r.review_date)}}</td>
+              <td class="muted">{{fmtDate(r.first_seen_at)}}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">无匹配结果</div>
+        <div class="row pager" style="margin-top:12px;justify-content:center" v-if="libList.total>30">
+          <button class="btn sm" :disabled="libPage===0" @click="libPage--;loadLib()">上一页</button>
+          <span class="muted">第 {{libPage+1}} / {{libTotalPages}} 页</span>
+          <button class="btn sm" :disabled="libPage+1>=libTotalPages" @click="libPage++;loadLib()">下一页</button>
+        </div>
+      </div>
+    </template>
+
+    <!-- ==================== REVIEW WATCH (monitored ASINs) ==================== -->
+    <template v-else-if="route==='reviewwatch'">
+      <div class="card">
+        <h3>加入监控 ASIN</h3>
+        <div class="row">
+          <input v-model="watchForm.asin" placeholder="ASIN，如 B0DWF7113H" maxlength="10" style="width:180px;text-transform:uppercase" @keyup.enter="addWatch">
+          <select v-model="watchForm.country_code" style="width:100px">
+            <option value="US">🇺🇸 US</option><option value="GB">🇬🇧 GB</option><option value="DE">🇩🇪 DE</option>
+            <option value="FR">🇫🇷 FR</option><option value="JP">🇯🇵 JP</option><option value="CA">🇨🇦 CA</option>
+          </select>
+          <input v-model="watchForm.note" placeholder="备注（可选）" style="width:200px">
+          <button class="btn primary" @click="addWatch" :disabled="watchBusy">加入监控</button>
+        </div>
+        <p class="muted" style="margin-top:8px">监控中的 ASIN 会被定时重抓（需在「数据源配置 / 系统设置」开启 <span class="mono">reviews_watch_cron</span>）；重复差评自动去重，只记录新增。</p>
+      </div>
+      <div class="card" v-if="watchList">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0">监控清单（{{watchList.items.length}}）</h3>
+          <button class="btn sm" @click="fetchAllWatch" :disabled="watchBusy">🔄 批量重抓启用项</button>
+        </div>
+        <table v-if="watchList.items.length">
+          <thead><tr><th>ASIN</th><th>站点</th><th>状态</th><th>差评数</th><th>备注</th><th>最近抓取</th><th>操作</th></tr></thead>
+          <tbody>
+            <tr v-for="w in watchList.items" :key="w.id">
+              <td class="mono"><b>{{w.asin}}</b></td>
+              <td>{{w.country_code}}</td>
+              <td><span class="tag" :class="w.status==='active'?'green':'gray'">{{w.status==='active'?'启用':'暂停'}}</span></td>
+              <td class="num">{{w.review_count}}</td>
+              <td class="muted">{{w.note||'—'}}</td>
+              <td class="muted">{{fmtDate(w.last_fetched_at)}}</td>
+              <td>
+                <button class="btn sm" @click="fetchWatch(w)" title="立即重抓">抓取</button>
+                <button class="btn sm" @click="toggleWatch(w)" style="margin-left:4px">{{w.status==='active'?'暂停':'启用'}}</button>
+                <button class="btn sm danger" @click="delWatch(w)" style="margin-left:4px" title="移除监控，可选同时彻底清除该 ASIN 的差评数据">移除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">监控清单为空，先在上方加入一个 ASIN</div>
+      </div>
+    </template>
+
+    <!-- ==================== REVIEW CHANGES (delta view) ==================== -->
+    <template v-else-if="route==='reviewchanges'">
+      <div class="card">
+        <div class="row">
+          <select v-model="changesAsin" @change="loadChanges">
+            <option value="">全部 ASIN</option>
+            <option v-for="a in (revOverview?.perAsin||[])" :key="a.asin" :value="a.asin">{{a.asin}}</option>
+          </select>
+          <select v-model.number="changesHours" @change="loadChanges">
+            <option :value="24">近 24 小时</option><option :value="168">近 7 天</option>
+            <option :value="720">近 30 天</option><option :value="8760">近 1 年</option>
+          </select>
+          <button class="btn primary" @click="loadChanges">刷新</button>
+        </div>
+      </div>
+      <div class="card" v-if="changes">
+        <h3>抓取快照变化（每 ASIN 最近 12 次）</h3>
+        <table v-if="changes.timeline.length">
+          <thead><tr><th>ASIN</th><th>抓取时间</th><th class="num">差评数</th><th class="num">较上次</th><th class="num">1-2 星</th><th class="num">均分</th><th class="num">均分变化</th></tr></thead>
+          <tbody>
+            <tr v-for="(t,i) in changes.timeline" :key="i">
+              <td class="mono">{{t.asin}}</td><td class="muted">{{fmtDate(t.fetched_at)}}</td>
+              <td class="num">{{t.total_reviews}}</td>
+              <td class="num" :style="t.delta_total>0?'color:var(--red)':t.delta_total<0?'color:var(--green)':''">{{deltaBadge(t.delta_total)}}</td>
+              <td class="num">{{t.negative_reviews}}</td>
+              <td class="num">{{Number(t.avg_rating||0).toFixed(2)}}</td>
+              <td class="num" :style="t.delta_avg>0?'color:var(--green)':t.delta_avg<0?'color:var(--red)':''">{{deltaBadge(t.delta_avg)}}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">暂无快照，先抓取几次差评后即可看到变化</div>
+      </div>
+      <div class="card" v-if="changes && changes.newReviews.length">
+        <h3>新增差评（窗口内首次入库，共 {{changes.newReviews.length}} 条）</h3>
+        <div class="rev-list">
+          <div v-for="r in changes.newReviews" :key="r.review_id" class="rev-item">
+            <div class="rev-item-head">
+              <span class="rev-stars">{{revStar(r.rating)}}</span>
+              <b>{{r.title||'（无标题）'}}</b>
+              <span class="muted mono" style="margin-left:auto">{{r.asin}} · 入库 {{fmtDate(r.first_seen_at)}}</span>
+            </div>
+            <div class="rev-body">{{r.body}}</div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ==================== DATASOURCE CONFIG (module-driven) ==================== -->
+    <template v-else-if="route==='datasource'">
+      <div class="card">
+        <h3 style="margin:0">数据源配置 <span class="muted" style="font-size:12px;font-weight:400">— 按模块展示，仅显示已启用模块</span></h3>
+        <p class="muted" style="margin:8px 0 0">此处所有值写入系统设置，<b>优先于 docker compose 环境变量</b>，留空回退到环境变量。各模块接口与运行参数归在其模块下；修改后点底部按钮统一保存。</p>
+      </div>
+
+      <!-- core module: lexicon (always enabled) -->
+      <div class="card" v-if="settingsForm.cron!==undefined">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="margin:0">联想词词库 <span class="tag blue">core · 常驻启用</span></h3>
+        </div>
+        <div class="settings-grid">
+          <template v-if="settingsForm.suggest_api_url!==undefined">
+            <div class="group-title">抓取源（联想词接口地址，存数据库可随时更换；不带 ? 参数）</div>
+            <label>接口地址<input v-model="settingsForm.suggest_api_url" class="mono"></label>
+          </template>
+
+          <div class="group-title">周调度</div>
+          <label>cron 表达式（周几几点抓取）<input v-model="settingsForm.cron"></label>
+          <label>随机启动延迟上限（毫秒，打散启动时间）<input v-model="settingsForm.start_jitter_max_ms" type="number"></label>
+
+          <div class="group-title">反爬节奏（速度换安全，宁慢勿封）</div>
+          <label>请求间随机延迟下限（毫秒）<input v-model="settingsForm.request_delay_min_ms" type="number"></label>
+          <label>请求间随机延迟上限（毫秒）<input v-model="settingsForm.request_delay_max_ms" type="number"></label>
+          <label>长停顿触发概率（0-1，模拟人类走神）<input v-model="settingsForm.pause_chance" type="number" step="0.01"></label>
+          <label>长停顿时长下限（毫秒）<input v-model="settingsForm.pause_min_ms" type="number"></label>
+          <label>长停顿时长上限（毫秒）<input v-model="settingsForm.pause_max_ms" type="number"></label>
+
+          <div class="group-title">抓取范围</div>
+          <label>基础联想返回条数<input v-model="settingsForm.basic_limit" type="number"></label>
+          <label>扩展挖掘：取前 N 个基础词做字母扩展<input v-model="settingsForm.expand_top" type="number"></label>
+          <label>扩展字母表<input v-model="settingsForm.alphabet"></label>
+
+          <div class="group-title">容错与熔断</div>
+          <label>单请求最大重试次数<input v-model="settingsForm.max_retries" type="number"></label>
+          <label>退避基数（毫秒，指数×2）<input v-model="settingsForm.backoff_base_ms" type="number"></label>
+          <label>退避上限（毫秒）<input v-model="settingsForm.backoff_cap_ms" type="number"></label>
+          <label>连续失败 N 次触发熔断<input v-model="settingsForm.breaker_threshold" type="number"></label>
+          <label>熔断暂停时长（毫秒）<input v-model="settingsForm.breaker_pause_ms" type="number"></label>
+
+          <div class="group-title">live 抓取治理</div>
+          <label>live 同步截止时间（毫秒）<input v-model="settingsForm.mcp_live_sync_deadline_ms" type="number"></label>
+          <label>live 抓取结果合并进词库（1 开 / 0 关）<input v-model="settingsForm.mcp_live_persist" type="number" min="0" max="1"></label>
+          <label>live 关键词自动建为暂停种子词（1 开 / 0 关）<input v-model="settingsForm.mcp_live_auto_seed" type="number" min="0" max="1"></label>
+          <label>自动建种子词的最少词数<input v-model="settingsForm.live_seed_min_words" type="number"></label>
+          <label>自动建种子词的最多词数<input v-model="settingsForm.live_seed_max_words" type="number"></label>
+          <label>live 全服每日上限（所有 key 合计）<input v-model="settingsForm.mcp_live_global_daily" type="number"></label>
+        </div>
+      </div>
+
+      <!-- optional module: reviews (only when enabled) -->
+      <template v-if="moduleEnabled('reviews')">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">ASIN 差评 <span class="tag amber">reviews · 已启用</span></h3>
+          </div>
+          <div class="settings-grid">
+            <div class="group-title">Apify 接口</div>
+            <label>模式（mock 免费 / apify 真实付费）</label>
+            <select v-model="settingsForm.apify_mode">
+              <option value="mock">mock（模拟，不扣费）</option>
+              <option value="apify">apify（真实抓取，付费）</option>
+            </select>
+            <label>单 token（池未启用时使用）</label>
+            <input v-model="settingsForm.apify_token" class="mono" type="password" placeholder="留空则用环境变量 APIFY_TOKEN">
+            <label>最大并发抓取数（池启用时按可用 token 数放宽，此为上限）</label>
+            <input v-model="settingsForm.apify_max_concurrent" type="number" min="1">
+
+            <div class="group-title">监控调度与限额</div>
+            <label>定时重抓 cron（留空 = 不启用定时重抓）<input v-model="settingsForm.reviews_watch_cron" placeholder="0 4 * * 1"></label>
+            <label>重抓随机延迟上限（毫秒）<input v-model="settingsForm.reviews_watch_jitter_max_ms" type="number"></label>
+            <label>差评抓取全服每日上限<input v-model="settingsForm.reviews_global_daily" type="number"></label>
+          </div>
+
+          <!-- Token 池并入 ASIN 差评模块卡片，明确归属 -->
+          <template v-if="tokenData">
+          <div class="group-title" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+            <span>ASIN 差评 · Token 池（多账号额度轮换）</span>
+            <button class="btn sm" :class="tokenData.enabled?'danger':'primary'" @click="togglePool">{{tokenData.enabled?'关闭池（回退单 token）':'启用池'}}</button>
+          </div>
+          <p class="muted" style="margin:8px 0 12px">
+            当前模式 <b>{{tokenData.mode}}</b> · 池 {{tokenData.enabled?'已启用':'未启用'}} · 可用 {{tokenData.items.filter(t=>t.enabled&&!t.cooldown_active).length}}/{{tokenData.items.length}} · 单 token {{tokenData.single_token_masked||'未配置'}}
+          </p>
+          <div class="row" style="margin-bottom:14px;padding:12px;background:#f8fafc;border-radius:8px">
+            <input v-model="tokenForm.label" placeholder="标签，如 账号A" style="width:130px">
+            <input v-model="tokenForm.token" class="mono" type="password" placeholder="apify_api_xxx" style="width:220px">
+            <input v-model.number="tokenForm.priority" type="number" placeholder="优先级" style="width:90px" title="越大越优先">
+            <input v-model.number="tokenForm.quota_limit_usd" type="number" step="0.5" placeholder="月度额度$" style="width:110px" title="手填月度上限，0=未知">
+            <button class="btn primary" @click="addToken" :disabled="tokenBusy">添加</button>
+          </div>
+          <table v-if="tokenData.items.length">
+            <thead><tr><th>标签</th><th>Token</th><th>优先级</th><th class="num">额度/已用</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="t in tokenData.items" :key="t.id">
+                <td><input :value="t.label" @change="updateTokenField(t,'label',$event.target.value)" style="width:100px;height:30px"></td>
+                <td class="mono">{{t.token_masked}}</td>
+                <td><input :value="t.priority" type="number" @change="updateTokenField(t,'priority',Number($event.target.value))" style="width:60px;height:30px"></td>
+                <td class="num">{{t.quota_limit_usd||'—'}} / {{Number(t.quota_used_usd||0).toFixed(2)}}</td>
+                <td><span class="tag" :class="t.quota_source==='api'?'blue':'gray'">{{t.quota_source}}</span></td>
+                <td>
+                  <span class="tag" :class="t.enabled?'green':'gray'">{{t.enabled?'启用':'禁用'}}</span>
+                  <span v-if="t.cooldown_active" class="tag amber" title="认证/额度问题临时冷却">冷却中</span>
+                </td>
+                <td>
+                  <button class="btn sm" @click="refreshToken(t)" title="从 Apify 自动查额度">刷额度</button>
+                  <button class="btn sm" @click="updateTokenField(t,'enabled',t.enabled?0:1)" style="margin-left:4px">{{t.enabled?'禁用':'启用'}}</button>
+                  <button class="btn sm" v-if="t.cooldown_active" @click="clearCooldown(t)" style="margin-left:4px">解冷却</button>
+                  <button class="btn sm danger" @click="delToken(t)" style="margin-left:4px">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="empty">Token 池为空，添加一个账号 token 开始轮换</div>
+          <p class="muted" style="margin-top:10px">策略：过滤禁用/冷却/额度耗尽 → 剩余额度多者优先 + 轮询打散。启动阶段遇认证/额度错误自动冷却该 token 并换下一个；一个抓取 run 全程绑定同一 token。token 不明文回显、不进日志。token 增删改即时生效，无需点下方保存。</p>
+          </template>
+        </div>
+      </template>
+      <div class="card" v-else>
+        <p class="muted" style="margin:0">ASIN 差评模块未启用。在「模块总览」开启 <code>reviews</code> 后，此处会显示 Apify 接口与 Token 池配置。</p>
+      </div>
+
+      <div class="card">
+        <div v-if="settingsMsg" class="okmsg">{{settingsMsg}}</div>
+        <button class="btn primary" @click="saveDsConfig" :disabled="settingsForm.cron===undefined">保存数据源配置（所有模块）</button>
+        <p class="muted" style="margin:8px 0 0">保存后调度器按新 cron 自动重载；token 池的增删改即时生效，不依赖此按钮。</p>
+      </div>
+    </template>
 
     <!-- ==================== DASHBOARD ==================== -->
     <template v-if="route==='dashboard'">
@@ -749,45 +1515,15 @@ const App = {
     <!-- ==================== SETTINGS ==================== -->
     <template v-else-if="route==='settings'">
       <div class="card">
-        <h3>运行参数</h3>
+        <h3 style="margin:0">系统设置 <span class="muted" style="font-size:12px;font-weight:400">— 基座级</span></h3>
+        <p class="muted" style="margin:8px 0 0">这里只放与具体业务模块无关的基座配置。联想词词库、ASIN 差评的接口与运行参数已归入「数据源配置」，按模块展示。</p>
+      </div>
+      <div class="card">
+        <h3>基座通用参数</h3>
         <div v-if="settingsMsg" class="okmsg">{{settingsMsg}}</div>
-        <div class="settings-grid" v-if="settingsForm.cron!==undefined">
-          <template v-if="settingsForm.suggest_api_url!==undefined">
-            <div class="group-title">抓取源（联想词接口地址，存在数据库，可随时更换；不带 ? 参数，兼容带参数的完整地址）</div>
-            <label>接口地址<input v-model="settingsForm.suggest_api_url" class="mono"></label>
-          </template>
-
-          <div class="group-title">周调度</div>
-          <label>cron 表达式（周几几点抓取）<input v-model="settingsForm.cron"></label>
-          <label>随机启动延迟上限（毫秒，打散启动时间）<input v-model="settingsForm.start_jitter_max_ms" type="number"></label>
-
-          <div class="group-title">反爬节奏（速度换安全，宁慢勿封）</div>
-          <label>请求间随机延迟下限（毫秒）<input v-model="settingsForm.request_delay_min_ms" type="number"></label>
-          <label>请求间随机延迟上限（毫秒）<input v-model="settingsForm.request_delay_max_ms" type="number"></label>
-          <label>长停顿触发概率（0-1，模拟人类走神）<input v-model="settingsForm.pause_chance" type="number" step="0.01"></label>
-          <label>长停顿时长下限（毫秒）<input v-model="settingsForm.pause_min_ms" type="number"></label>
-          <label>长停顿时长上限（毫秒）<input v-model="settingsForm.pause_max_ms" type="number"></label>
-
-          <div class="group-title">抓取范围</div>
-          <label>基础联想返回条数<input v-model="settingsForm.basic_limit" type="number"></label>
-          <label>扩展挖掘：取前 N 个基础词做字母扩展<input v-model="settingsForm.expand_top" type="number"></label>
-          <label>扩展字母表<input v-model="settingsForm.alphabet"></label>
-
-          <div class="group-title">容错与熔断</div>
-          <label>单请求最大重试次数<input v-model="settingsForm.max_retries" type="number"></label>
-          <label>退避基数（毫秒，指数×2）<input v-model="settingsForm.backoff_base_ms" type="number"></label>
-          <label>退避上限（毫秒）<input v-model="settingsForm.backoff_cap_ms" type="number"></label>
-          <label>连续失败 N 次触发熔断<input v-model="settingsForm.breaker_threshold" type="number"></label>
-          <label>熔断暂停时长（毫秒）<input v-model="settingsForm.breaker_pause_ms" type="number"></label>
-
-          <div class="group-title">存储与 MCP</div>
+        <div class="settings-grid" v-if="settingsForm.fetch_log_keep_days!==undefined">
           <label>fetch_log 原始报文保留天数<input v-model="settingsForm.fetch_log_keep_days" type="number"></label>
           <label>MCP 限流（每 key 每分钟调用上限）<input v-model="settingsForm.mcp_rate_limit_per_min" type="number"></label>
-          <label>MCP live 全服每日上限（所有 key 合计）<input v-model="settingsForm.mcp_live_global_daily" type="number"></label>
-          <label>live 抓取结果合并进词库（1 开 / 0 关）<input v-model="settingsForm.mcp_live_persist" type="number" min="0" max="1"></label>
-          <label>live 关键词自动建为暂停种子词（1 开 / 0 关）<input v-model="settingsForm.mcp_live_auto_seed" type="number" min="0" max="1"></label>
-          <label>自动建种子词的最少词数<input v-model="settingsForm.live_seed_min_words" type="number"></label>
-          <label>自动建种子词的最多词数<input v-model="settingsForm.live_seed_max_words" type="number"></label>
         </div>
       </div>
       <div class="card">
@@ -801,7 +1537,7 @@ const App = {
             </tr>
           </tbody>
         </table>
-        <button class="btn primary" style="margin-top:14px" @click="saveSettings">保存全部设置</button>
+        <button class="btn primary" style="margin-top:14px" @click="saveSettings">保存基座设置</button>
       </div>
       <div class="card">
         <h3>修改管理员密码</h3>

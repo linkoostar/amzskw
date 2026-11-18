@@ -6,8 +6,10 @@ import { getStats, getKeywordSnapshot, getTrendMatrix, searchLexicon } from './q
 import { addCredits, countLiveCallsToday } from './credits.js';
 import { reattachOrphanHistory } from './queries.js';
 import { reloadScheduler, schedulerStatus } from './scheduler.js';
+import { reloadReviewsScheduler, reviewsSchedulerStatus } from './modules/reviews/scheduler.js';
 import { config } from './config.js';
 import { csvEscape, normalizePhrase, nowIso, randomToken, sha256hex } from './util.js';
+import { describeModules } from './modules/catalog.js';
 
 export function registerApi(app: FastifyInstance): void {
   const db = getDb();
@@ -126,8 +128,18 @@ export function registerApi(app: FastifyInstance): void {
     return { ok: true };
   });
 
+  // ----------------------------------------------------------------- modules
+  // 只读：返回当前进程已加载/已启用的模块清单及其贡献的 MCP 工具，供后台导航与模块总览页使用。
+  app.get('/api/modules', async () => ({
+    modules: describeModules(),
+    switchVar: 'AMZ_ENABLED_MODULES',
+  }));
+
   // ------------------------------------------------------------------- stats
-  app.get('/api/stats', async () => ({ ...getStats(), breaker: breakerState(), scheduler: schedulerStatus() }));
+  app.get('/api/stats', async () => ({
+    ...getStats(), breaker: breakerState(), scheduler: schedulerStatus(),
+    reviews_scheduler: reviewsSchedulerStatus(),
+  }));
 
   // ------------------------------------------------------------------- sites
   app.get('/api/sites', async () => db.prepare('SELECT mid, name, flag, locale FROM sites ORDER BY sort').all());
@@ -427,6 +439,7 @@ export function registerApi(app: FastifyInstance): void {
       });
       tx();
       reloadScheduler(); // cron may have changed
+      reloadReviewsScheduler(); // reviews watch cron may have changed
     }
     if (b.pricing) {
       const up = db.prepare('INSERT INTO tool_pricing(tool, price) VALUES (?, ?) ON CONFLICT(tool) DO UPDATE SET price=excluded.price');

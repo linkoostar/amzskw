@@ -136,7 +136,56 @@ textarea{resize:vertical;min-height:110px;font-family:ui-monospace,monospace;fon
   /* 窄屏下表格横向滚动，避免撑破页面 */
   table{display:block;overflow-x:auto;white-space:nowrap}
 }
+/* ============ 模块化基座：导航分组 + 模块总览（P2 UI） ============ */
+.nav-group{padding:12px 12px 4px;font-size:13px;font-weight:600;color:#8492a8;display:flex;align-items:center;gap:6px}
+.nav-core{font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;background:#1f2a3c;color:#8ea2bd;letter-spacing:0}
+.tag.muted-tag{background:#eef1f5;color:var(--muted)}
+
+.hub-intro h3{margin-bottom:6px}
+.hub-intro p{margin:0;line-height:1.7}
+.mod-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+.mod-card{display:flex;flex-direction:column;gap:10px}
+.mod-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.mod-title{font-size:15px;font-weight:700;color:#1a2333}
+.mod-badges{display:flex;gap:5px;flex-shrink:0}
+.mod-meta{font-size:12px;color:var(--muted)}
+.mod-tools{border-top:1px solid var(--border);padding-top:8px;display:flex;flex-direction:column;gap:6px}
+.mod-tool{display:flex;align-items:baseline;gap:3px 7px;flex-wrap:wrap;font-size:12px;padding:6px 0;border-bottom:1px dashed var(--border)}
+.mod-tool:last-child{border-bottom:none}
+.tool-name{color:var(--primary);font-weight:600;flex:0 0 auto}
+.tool-desc{color:var(--muted);font-size:11.5px;flex:1 1 100%;line-height:1.55;margin-top:2px;white-space:normal}
+.mod-foot{font-size:11.5px;color:var(--muted);border-top:1px dashed var(--border);padding-top:8px}
+
+/* 侧边栏可折叠分组 */
+button.nav-group{display:flex;width:100%;align-items:center;gap:6px;padding:12px 12px 5px;font:inherit;font-size:13px;font-weight:600;
+  color:#8492a8;background:none;border:none;text-align:left;cursor:pointer}
+button.nav-group:hover{color:#cdd5e1}
+button.nav-group .chev{display:inline-block;font-size:10px;transition:transform .15s;color:#5d6b81}
+button.nav-group .chev.closed{transform:rotate(-90deg)}
+button.nav-group .nav-core{margin-left:auto}
+
+/* 差评情报页 */
+.rev-mode{padding:12px 16px;font-size:12.5px}
+.rev-mode.is-mock{background:#f0f9ff;border-color:#bae6fd;color:#0369a1}
+.rev-mode.is-live{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+.rev-bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.rev-bar-label{width:42px;font-size:12px;color:var(--muted)}
+.rev-bar-num{width:28px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums}
+.rev-kw-cloud{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline}
+.rev-kw{display:inline-block;padding:3px 9px;background:var(--primary-weak);color:var(--primary);border-radius:14px;font-weight:600;line-height:1.4}
+.rev-kw small{font-weight:400;color:var(--muted);font-size:10px}
+.rev-list{display:flex;flex-direction:column;gap:10px}
+.rev-item{border:1px solid var(--border);border-radius:9px;padding:11px 13px;background:#fff}
+.rev-item-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.rev-stars{color:var(--amber);font-size:13px;letter-spacing:1px;white-space:nowrap}
+.rev-body{font-size:12.5px;color:#475569;margin:7px 0;line-height:1.6;white-space:pre-wrap}
+.rev-item-foot{display:flex;justify-content:space-between;align-items:center;font-size:11.5px;gap:10px}
+.rev-item-foot a{color:var(--primary);text-decoration:none}
+.rev-item-foot a:hover{text-decoration:underline}
+tr[style*="cursor:pointer"]:hover td{background:var(--primary-weak)}
+
 @media(max-width:560px){
   .cols4,.cols3,.cols2{grid-template-columns:1fr}
   .topbar h1{font-size:17px}
+  .mod-grid{grid-template-columns:1fr}
 }

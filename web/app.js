@@ -49,7 +49,12 @@ const App = {
       changes: null, changesAsin: '', changesHours: 720,
       // apify token pool
       tokenData: null, tokenForm: { label: '', token: '', priority: 0, quota_limit_usd: 0 }, tokenBusy: false,
-      dsForm: { apify_mode: 'mock', apify_token: '' },
+      // settings ownership: each admin page saves only its own keys (no cross-page overwrite)
+      configKeys: {
+        lexicon: ['suggest_api_url','cron','start_jitter_max_ms','request_delay_min_ms','request_delay_max_ms','pause_chance','pause_min_ms','pause_max_ms','basic_limit','expand_top','alphabet','max_retries','backoff_base_ms','backoff_cap_ms','breaker_threshold','breaker_pause_ms','mcp_live_persist','mcp_live_global_daily','mcp_live_auto_seed','live_seed_min_words','live_seed_max_words','mcp_live_sync_deadline_ms'],
+        reviews: ['apify_mode','apify_token','apify_max_concurrent','reviews_watch_cron','reviews_watch_jitter_max_ms','reviews_global_daily'],
+        base: ['fetch_log_keep_days','mcp_rate_limit_per_min'],
+      },
       // keys
       keyList: [], keyForm: { name: '', credits: 100 }, newKey: null, ledger: null, ledgerName: '',
       // settings
@@ -129,7 +134,7 @@ const App = {
         const hit = g.items.find((i) => i.route === this.route);
         if (hit) return hit.label;
       }
-      return { modules: '模块总览', datasource: '数据源配置（Apify / Token 池）', keys: 'API Keys / Credits 计费', settings: '系统设置' }[this.route] || this.route;
+      return { modules: '模块总览', datasource: '数据源配置（按模块）', keys: 'API Keys / Credits 计费', settings: '系统设置（基座）' }[this.route] || this.route;
     },
     mcpConfig() {
       if (!this.newKey) return '';
@@ -175,7 +180,7 @@ const App = {
       if (r === 'reviewlib') this.loadLib();
       if (r === 'reviewwatch') this.loadWatch();
       if (r === 'reviewchanges') this.loadChanges();
-      if (r === 'datasource') this.loadTokens();
+      if (r === 'datasource') this.loadDatasource();
       if (r === 'keys') this.loadKeys();
       if (r === 'settings') this.loadSettings();
       if (r === 'dashboard') this.loadSites();
@@ -344,22 +349,34 @@ const App = {
       return String(n);
     },
 
+    // ---------------- module config ownership helpers ----------------
+    moduleEnabled(id) { const m = this.modules.find(x => x.id === id); return !!(m && m.enabled); },
+    // pick only the keys this page owns, from the shared settingsForm
+    pickKeys(keys) {
+      const out = {};
+      for (const k of keys) if (this.settingsForm[k] !== undefined) out[k] = this.settingsForm[k];
+      return out;
+    },
+
     // ---------------- apify token pool ----------------
     async loadTokens() {
+      try { this.tokenData = await api('GET', '/api/reviews/tokens'); } catch (e) { this.handleErr(e); }
+    },
+    async loadDatasource() {
       try {
-        this.tokenData = await api('GET', '/api/reviews/tokens');
-        const s = await api('GET', '/api/settings');
-        this.dsForm = {
-          apify_mode: s.settings.apify_mode || 'mock',
-          apify_token: s.settings.apify_token || '',
-        };
+        const d = await api('GET', '/api/settings');
+        this.settingsForm = d.settings;
+        this.pricingRows = d.pricing;
       } catch (e) { this.handleErr(e); }
+      this.loadTokens();
     },
     async saveDsConfig() {
+      // save only keys owned by the datasource page (lexicon module + reviews module)
+      const keys = [...this.configKeys.lexicon, ...this.configKeys.reviews];
       try {
-        await api('PUT', '/api/settings', { settings: { apify_mode: this.dsForm.apify_mode, apify_token: this.dsForm.apify_token } });
-        this.notify('数据源配置已保存（settings 优先于环境变量）');
-        this.loadTokens();
+        await api('PUT', '/api/settings', { settings: this.pickKeys(keys) });
+        this.notify('数据源配置已保存（settings 优先于环境变量；调度已按新 cron 重载）');
+        this.loadDatasource();
       } catch (e) { this.handleErr(e); }
     },
     async addToken() {
@@ -728,8 +745,9 @@ const App = {
       const pricing = {};
       this.pricingRows.forEach(p => pricing[p.tool] = p.price);
       try {
-        await api('PUT', '/api/settings', { settings: this.settingsForm, pricing });
-        this.settingsMsg = '已保存，调度已按新 cron 重新加载';
+        // only submit base keys + pricing; module config belongs to the datasource page
+        await api('PUT', '/api/settings', { settings: this.pickKeys(this.configKeys.base), pricing });
+        this.settingsMsg = '已保存（基座参数与 Tool 定价）';
         setTimeout(() => this.settingsMsg = '', 3500);
         this.loadSettings();
       } catch (e) { this.handleErr(e); }
@@ -1064,62 +1082,131 @@ const App = {
       </div>
     </template>
 
-    <!-- ==================== DATASOURCE CONFIG (dual-mode + token pool) ==================== -->
+    <!-- ==================== DATASOURCE CONFIG (module-driven) ==================== -->
     <template v-else-if="route==='datasource'">
       <div class="card">
-        <h3>Apify 数据源模式</h3>
-        <div class="settings-grid">
-          <label>模式（mock 免费 / apify 真实付费）</label>
-          <select v-model="dsForm.apify_mode">
-            <option value="mock">mock（模拟，不扣费）</option>
-            <option value="apify">apify（真实抓取，付费）</option>
-          </select>
-          <label>单 token（池未启用时使用）</label>
-          <input v-model="dsForm.apify_token" class="mono" type="password" placeholder="留空则用环境变量 APIFY_TOKEN">
-        </div>
-        <p class="muted" style="margin-top:8px">此处的值写入系统设置，<b>优先于 docker compose 环境变量</b>。留空时回退到环境变量。</p>
-        <button class="btn primary" style="margin-top:12px" @click="saveDsConfig">保存配置</button>
+        <h3 style="margin:0">数据源配置 <span class="muted" style="font-size:12px;font-weight:400">— 按模块展示，仅显示已启用模块</span></h3>
+        <p class="muted" style="margin:8px 0 0">此处所有值写入系统设置，<b>优先于 docker compose 环境变量</b>，留空回退到环境变量。各模块接口与运行参数归在其模块下；修改后点底部按钮统一保存。</p>
       </div>
 
-      <div class="card" v-if="tokenData">
+      <!-- core module: lexicon (always enabled) -->
+      <div class="card" v-if="settingsForm.cron!==undefined">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="margin:0">Token 池（多账号额度轮换）</h3>
-          <button class="btn sm" :class="tokenData.enabled?'danger':'primary'" @click="togglePool">{{tokenData.enabled?'关闭池（回退单 token）':'启用池'}}</button>
+          <h3 style="margin:0">联想词词库 <span class="tag blue">core · 常驻启用</span></h3>
         </div>
-        <p class="muted" style="margin-bottom:12px">
-          当前模式 <b>{{tokenData.mode}}</b> · 池 {{tokenData.enabled?'已启用':'未启用'}} · 可用 {{tokenData.items.filter(t=>t.enabled&&!t.cooldown_active).length}}/{{tokenData.items.length}} · 单 token {{tokenData.single_token_masked||'未配置'}}
-        </p>
-        <div class="row" style="margin-bottom:14px;padding:12px;background:#f8fafc;border-radius:8px">
-          <input v-model="tokenForm.label" placeholder="标签，如 账号A" style="width:130px">
-          <input v-model="tokenForm.token" class="mono" type="password" placeholder="apify_api_xxx" style="width:220px">
-          <input v-model.number="tokenForm.priority" type="number" placeholder="优先级" style="width:90px" title="越大越优先">
-          <input v-model.number="tokenForm.quota_limit_usd" type="number" step="0.5" placeholder="月度额度$" style="width:110px" title="手填月度上限，0=未知">
-          <button class="btn primary" @click="addToken" :disabled="tokenBusy">添加</button>
+        <div class="settings-grid">
+          <template v-if="settingsForm.suggest_api_url!==undefined">
+            <div class="group-title">抓取源（联想词接口地址，存数据库可随时更换；不带 ? 参数）</div>
+            <label>接口地址<input v-model="settingsForm.suggest_api_url" class="mono"></label>
+          </template>
+
+          <div class="group-title">周调度</div>
+          <label>cron 表达式（周几几点抓取）<input v-model="settingsForm.cron"></label>
+          <label>随机启动延迟上限（毫秒，打散启动时间）<input v-model="settingsForm.start_jitter_max_ms" type="number"></label>
+
+          <div class="group-title">反爬节奏（速度换安全，宁慢勿封）</div>
+          <label>请求间随机延迟下限（毫秒）<input v-model="settingsForm.request_delay_min_ms" type="number"></label>
+          <label>请求间随机延迟上限（毫秒）<input v-model="settingsForm.request_delay_max_ms" type="number"></label>
+          <label>长停顿触发概率（0-1，模拟人类走神）<input v-model="settingsForm.pause_chance" type="number" step="0.01"></label>
+          <label>长停顿时长下限（毫秒）<input v-model="settingsForm.pause_min_ms" type="number"></label>
+          <label>长停顿时长上限（毫秒）<input v-model="settingsForm.pause_max_ms" type="number"></label>
+
+          <div class="group-title">抓取范围</div>
+          <label>基础联想返回条数<input v-model="settingsForm.basic_limit" type="number"></label>
+          <label>扩展挖掘：取前 N 个基础词做字母扩展<input v-model="settingsForm.expand_top" type="number"></label>
+          <label>扩展字母表<input v-model="settingsForm.alphabet"></label>
+
+          <div class="group-title">容错与熔断</div>
+          <label>单请求最大重试次数<input v-model="settingsForm.max_retries" type="number"></label>
+          <label>退避基数（毫秒，指数×2）<input v-model="settingsForm.backoff_base_ms" type="number"></label>
+          <label>退避上限（毫秒）<input v-model="settingsForm.backoff_cap_ms" type="number"></label>
+          <label>连续失败 N 次触发熔断<input v-model="settingsForm.breaker_threshold" type="number"></label>
+          <label>熔断暂停时长（毫秒）<input v-model="settingsForm.breaker_pause_ms" type="number"></label>
+
+          <div class="group-title">live 抓取治理</div>
+          <label>live 同步截止时间（毫秒）<input v-model="settingsForm.mcp_live_sync_deadline_ms" type="number"></label>
+          <label>live 抓取结果合并进词库（1 开 / 0 关）<input v-model="settingsForm.mcp_live_persist" type="number" min="0" max="1"></label>
+          <label>live 关键词自动建为暂停种子词（1 开 / 0 关）<input v-model="settingsForm.mcp_live_auto_seed" type="number" min="0" max="1"></label>
+          <label>自动建种子词的最少词数<input v-model="settingsForm.live_seed_min_words" type="number"></label>
+          <label>自动建种子词的最多词数<input v-model="settingsForm.live_seed_max_words" type="number"></label>
+          <label>live 全服每日上限（所有 key 合计）<input v-model="settingsForm.mcp_live_global_daily" type="number"></label>
         </div>
-        <table v-if="tokenData.items.length">
-          <thead><tr><th>标签</th><th>Token</th><th>优先级</th><th class="num">额度/已用</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody>
-            <tr v-for="t in tokenData.items" :key="t.id">
-              <td><input :value="t.label" @change="updateTokenField(t,'label',$event.target.value)" style="width:100px;height:30px"></td>
-              <td class="mono">{{t.token_masked}}</td>
-              <td><input :value="t.priority" type="number" @change="updateTokenField(t,'priority',Number($event.target.value))" style="width:60px;height:30px"></td>
-              <td class="num">{{t.quota_limit_usd||'—'}} / {{Number(t.quota_used_usd||0).toFixed(2)}}</td>
-              <td><span class="tag" :class="t.quota_source==='api'?'blue':'gray'">{{t.quota_source}}</span></td>
-              <td>
-                <span class="tag" :class="t.enabled?'green':'gray'">{{t.enabled?'启用':'禁用'}}</span>
-                <span v-if="t.cooldown_active" class="tag amber" title="认证/额度问题临时冷却">冷却中</span>
-              </td>
-              <td>
-                <button class="btn sm" @click="refreshToken(t)" title="从 Apify 自动查额度">刷额度</button>
-                <button class="btn sm" @click="updateTokenField(t,'enabled',t.enabled?0:1)" style="margin-left:4px">{{t.enabled?'禁用':'启用'}}</button>
-                <button class="btn sm" v-if="t.cooldown_active" @click="clearCooldown(t)" style="margin-left:4px">解冷却</button>
-                <button class="btn sm danger" @click="delToken(t)" style="margin-left:4px">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="empty">Token 池为空，添加一个账号 token 开始轮换</div>
-        <p class="muted" style="margin-top:10px">策略：过滤禁用/冷却/额度耗尽 → 剩余额度多者优先 + 轮询打散。启动阶段遇认证/额度错误自动冷却该 token 并换下一个；一个抓取 run 全程绑定同一 token。token 不明文回显、不进日志。</p>
+      </div>
+
+      <!-- optional module: reviews (only when enabled) -->
+      <template v-if="moduleEnabled('reviews')">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">ASIN 差评 <span class="tag amber">reviews · 已启用</span></h3>
+          </div>
+          <div class="settings-grid">
+            <div class="group-title">Apify 接口</div>
+            <label>模式（mock 免费 / apify 真实付费）</label>
+            <select v-model="settingsForm.apify_mode">
+              <option value="mock">mock（模拟，不扣费）</option>
+              <option value="apify">apify（真实抓取，付费）</option>
+            </select>
+            <label>单 token（池未启用时使用）</label>
+            <input v-model="settingsForm.apify_token" class="mono" type="password" placeholder="留空则用环境变量 APIFY_TOKEN">
+            <label>最大并发抓取数（池启用时按可用 token 数放宽，此为上限）</label>
+            <input v-model="settingsForm.apify_max_concurrent" type="number" min="1">
+
+            <div class="group-title">监控调度与限额</div>
+            <label>定时重抓 cron（留空 = 不启用定时重抓）<input v-model="settingsForm.reviews_watch_cron" placeholder="0 4 * * 1"></label>
+            <label>重抓随机延迟上限（毫秒）<input v-model="settingsForm.reviews_watch_jitter_max_ms" type="number"></label>
+            <label>差评抓取全服每日上限<input v-model="settingsForm.reviews_global_daily" type="number"></label>
+          </div>
+        </div>
+
+        <div class="card" v-if="tokenData">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin:0">Token 池（多账号额度轮换）</h3>
+            <button class="btn sm" :class="tokenData.enabled?'danger':'primary'" @click="togglePool">{{tokenData.enabled?'关闭池（回退单 token）':'启用池'}}</button>
+          </div>
+          <p class="muted" style="margin-bottom:12px">
+            当前模式 <b>{{tokenData.mode}}</b> · 池 {{tokenData.enabled?'已启用':'未启用'}} · 可用 {{tokenData.items.filter(t=>t.enabled&&!t.cooldown_active).length}}/{{tokenData.items.length}} · 单 token {{tokenData.single_token_masked||'未配置'}}
+          </p>
+          <div class="row" style="margin-bottom:14px;padding:12px;background:#f8fafc;border-radius:8px">
+            <input v-model="tokenForm.label" placeholder="标签，如 账号A" style="width:130px">
+            <input v-model="tokenForm.token" class="mono" type="password" placeholder="apify_api_xxx" style="width:220px">
+            <input v-model.number="tokenForm.priority" type="number" placeholder="优先级" style="width:90px" title="越大越优先">
+            <input v-model.number="tokenForm.quota_limit_usd" type="number" step="0.5" placeholder="月度额度$" style="width:110px" title="手填月度上限，0=未知">
+            <button class="btn primary" @click="addToken" :disabled="tokenBusy">添加</button>
+          </div>
+          <table v-if="tokenData.items.length">
+            <thead><tr><th>标签</th><th>Token</th><th>优先级</th><th class="num">额度/已用</th><th>来源</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="t in tokenData.items" :key="t.id">
+                <td><input :value="t.label" @change="updateTokenField(t,'label',$event.target.value)" style="width:100px;height:30px"></td>
+                <td class="mono">{{t.token_masked}}</td>
+                <td><input :value="t.priority" type="number" @change="updateTokenField(t,'priority',Number($event.target.value))" style="width:60px;height:30px"></td>
+                <td class="num">{{t.quota_limit_usd||'—'}} / {{Number(t.quota_used_usd||0).toFixed(2)}}</td>
+                <td><span class="tag" :class="t.quota_source==='api'?'blue':'gray'">{{t.quota_source}}</span></td>
+                <td>
+                  <span class="tag" :class="t.enabled?'green':'gray'">{{t.enabled?'启用':'禁用'}}</span>
+                  <span v-if="t.cooldown_active" class="tag amber" title="认证/额度问题临时冷却">冷却中</span>
+                </td>
+                <td>
+                  <button class="btn sm" @click="refreshToken(t)" title="从 Apify 自动查额度">刷额度</button>
+                  <button class="btn sm" @click="updateTokenField(t,'enabled',t.enabled?0:1)" style="margin-left:4px">{{t.enabled?'禁用':'启用'}}</button>
+                  <button class="btn sm" v-if="t.cooldown_active" @click="clearCooldown(t)" style="margin-left:4px">解冷却</button>
+                  <button class="btn sm danger" @click="delToken(t)" style="margin-left:4px">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="empty">Token 池为空，添加一个账号 token 开始轮换</div>
+          <p class="muted" style="margin-top:10px">策略：过滤禁用/冷却/额度耗尽 → 剩余额度多者优先 + 轮询打散。启动阶段遇认证/额度错误自动冷却该 token 并换下一个；一个抓取 run 全程绑定同一 token。token 不明文回显、不进日志。token 增删改即时生效，无需点下方保存。</p>
+        </div>
+      </template>
+      <div class="card" v-else>
+        <p class="muted" style="margin:0">ASIN 差评模块未启用。在「模块总览」开启 <code>reviews</code> 后，此处会显示 Apify 接口与 Token 池配置。</p>
+      </div>
+
+      <div class="card">
+        <div v-if="settingsMsg" class="okmsg">{{settingsMsg}}</div>
+        <button class="btn primary" @click="saveDsConfig" :disabled="settingsForm.cron===undefined">保存数据源配置（所有模块）</button>
+        <p class="muted" style="margin:8px 0 0">保存后调度器按新 cron 自动重载；token 池的增删改即时生效，不依赖此按钮。</p>
       </div>
     </template>
 
@@ -1390,45 +1477,15 @@ const App = {
     <!-- ==================== SETTINGS ==================== -->
     <template v-else-if="route==='settings'">
       <div class="card">
-        <h3>运行参数</h3>
+        <h3 style="margin:0">系统设置 <span class="muted" style="font-size:12px;font-weight:400">— 基座级</span></h3>
+        <p class="muted" style="margin:8px 0 0">这里只放与具体业务模块无关的基座配置。联想词词库、ASIN 差评的接口与运行参数已归入「数据源配置」，按模块展示。</p>
+      </div>
+      <div class="card">
+        <h3>基座通用参数</h3>
         <div v-if="settingsMsg" class="okmsg">{{settingsMsg}}</div>
-        <div class="settings-grid" v-if="settingsForm.cron!==undefined">
-          <template v-if="settingsForm.suggest_api_url!==undefined">
-            <div class="group-title">抓取源（联想词接口地址，存在数据库，可随时更换；不带 ? 参数，兼容带参数的完整地址）</div>
-            <label>接口地址<input v-model="settingsForm.suggest_api_url" class="mono"></label>
-          </template>
-
-          <div class="group-title">周调度</div>
-          <label>cron 表达式（周几几点抓取）<input v-model="settingsForm.cron"></label>
-          <label>随机启动延迟上限（毫秒，打散启动时间）<input v-model="settingsForm.start_jitter_max_ms" type="number"></label>
-
-          <div class="group-title">反爬节奏（速度换安全，宁慢勿封）</div>
-          <label>请求间随机延迟下限（毫秒）<input v-model="settingsForm.request_delay_min_ms" type="number"></label>
-          <label>请求间随机延迟上限（毫秒）<input v-model="settingsForm.request_delay_max_ms" type="number"></label>
-          <label>长停顿触发概率（0-1，模拟人类走神）<input v-model="settingsForm.pause_chance" type="number" step="0.01"></label>
-          <label>长停顿时长下限（毫秒）<input v-model="settingsForm.pause_min_ms" type="number"></label>
-          <label>长停顿时长上限（毫秒）<input v-model="settingsForm.pause_max_ms" type="number"></label>
-
-          <div class="group-title">抓取范围</div>
-          <label>基础联想返回条数<input v-model="settingsForm.basic_limit" type="number"></label>
-          <label>扩展挖掘：取前 N 个基础词做字母扩展<input v-model="settingsForm.expand_top" type="number"></label>
-          <label>扩展字母表<input v-model="settingsForm.alphabet"></label>
-
-          <div class="group-title">容错与熔断</div>
-          <label>单请求最大重试次数<input v-model="settingsForm.max_retries" type="number"></label>
-          <label>退避基数（毫秒，指数×2）<input v-model="settingsForm.backoff_base_ms" type="number"></label>
-          <label>退避上限（毫秒）<input v-model="settingsForm.backoff_cap_ms" type="number"></label>
-          <label>连续失败 N 次触发熔断<input v-model="settingsForm.breaker_threshold" type="number"></label>
-          <label>熔断暂停时长（毫秒）<input v-model="settingsForm.breaker_pause_ms" type="number"></label>
-
-          <div class="group-title">存储与 MCP</div>
+        <div class="settings-grid" v-if="settingsForm.fetch_log_keep_days!==undefined">
           <label>fetch_log 原始报文保留天数<input v-model="settingsForm.fetch_log_keep_days" type="number"></label>
           <label>MCP 限流（每 key 每分钟调用上限）<input v-model="settingsForm.mcp_rate_limit_per_min" type="number"></label>
-          <label>MCP live 全服每日上限（所有 key 合计）<input v-model="settingsForm.mcp_live_global_daily" type="number"></label>
-          <label>live 抓取结果合并进词库（1 开 / 0 关）<input v-model="settingsForm.mcp_live_persist" type="number" min="0" max="1"></label>
-          <label>live 关键词自动建为暂停种子词（1 开 / 0 关）<input v-model="settingsForm.mcp_live_auto_seed" type="number" min="0" max="1"></label>
-          <label>自动建种子词的最少词数<input v-model="settingsForm.live_seed_min_words" type="number"></label>
-          <label>自动建种子词的最多词数<input v-model="settingsForm.live_seed_max_words" type="number"></label>
         </div>
       </div>
       <div class="card">
@@ -1442,7 +1499,7 @@ const App = {
             </tr>
           </tbody>
         </table>
-        <button class="btn primary" style="margin-top:14px" @click="saveSettings">保存全部设置</button>
+        <button class="btn primary" style="margin-top:14px" @click="saveSettings">保存基座设置</button>
       </div>
       <div class="card">
         <h3>修改管理员密码</h3>

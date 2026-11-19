@@ -424,6 +424,27 @@ export function registerApi(app: FastifyInstance): void {
     return { total, limit, offset, items };
   });
 
+  // 导出词库检索结果为 CSV（不带分页，导出当前筛选条件下的全部匹配行，带上限保护）
+  const LEXICON_EXPORT_MAX = 50_000;
+  app.get('/api/lexicon/export', async (req, reply) => {
+    const q = req.query as { query?: string; mid?: string; sort?: string; dir?: string };
+    const { total, items } = searchLexicon(q.query ?? '', q.mid || undefined, LEXICON_EXPORT_MAX, 0, q.sort || 'cnt', q.dir || 'desc');
+    const rows = items as Array<{ phrase: string; mid: string; seen_count: number; is_core: number; first_seen_at: string; last_seen_at: string }>;
+    if (total === 0 || rows.length === 0) return reply.code(404).send({ error: 'no data' });
+    const header = ['phrase', 'mid', 'seen_count', 'is_core', 'first_seen_at', 'last_seen_at'];
+    const lines = [header.map(csvEscape).join(',')];
+    for (const it of rows) {
+      lines.push(
+        [it.phrase, it.mid, String(it.seen_count), it.is_core ? '1' : '0', it.first_seen_at, it.last_seen_at]
+          .map(csvEscape)
+          .join(','),
+      );
+    }
+    reply.header('Content-Type', 'text/csv; charset=utf-8');
+    reply.header('Content-Disposition', `attachment; filename="lexicon-export.csv"`);
+    return '\uFEFF' + lines.join('\r\n');
+  });
+
   // ---------------------------------------------------------------- settings
   app.get('/api/settings', async () => ({
     settings: getAllSettings(),

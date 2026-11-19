@@ -653,6 +653,24 @@ const App = {
         this.lexJump = this.lexPage + 1;
       } catch (e) { this.handleErr(e); }
     },
+    async exportLexicon() {
+      try {
+        const p = new URLSearchParams({ query: this.lexQuery, sort: this.lexSort, dir: this.lexDir });
+        if (this.lexMid) p.set('mid', this.lexMid);
+        const res = await fetch('/api/lexicon/export?' + p);
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error || ('HTTP ' + res.status));
+        }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'lexicon-export.csv';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        this.notify('CSV 已导出（含 BOM，Excel 可直接打开中文）');
+      } catch (e) { this.handleErr(e); }
+    },
     sortLex(col) {
       if (this.lexSort === col) {
         this.lexDir = this.lexDir === 'asc' ? 'desc' : 'asc';
@@ -1433,7 +1451,10 @@ const App = {
         <p class="muted" style="margin-top:8px">词库 = 所有种子词历次抓取发现的联想词去重合集，记录首次/最近收录时间与出现次数。</p>
       </div>
       <div class="card" v-if="lexData">
-        <p class="muted" style="margin-bottom:10px">共 {{lexData.total}} 条</p>
+        <div class="row" style="margin-bottom:10px;justify-content:space-between;align-items:center">
+          <p class="muted" style="margin:0">共 {{lexData.total}} 条</p>
+          <button class="btn sm" v-if="lexData.items.length" @click="exportLexicon" title="按当前搜索条件导出全部匹配结果（不分页，上限 5 万行）">导出 CSV</button>
+        </div>
         <table v-if="lexData.items.length">
           <thead><tr>
             <th class="sortable" @click="sortLex('phrase')">联想词 {{lexArrow('phrase')}}</th>

@@ -19,7 +19,7 @@
  *     productUrls: [{ url: "https://www.amazon.com/dp/<ASIN>" }],
  *     reviewsAlwaysSaveCategoryData: false,
  *     reviewsUseProductVariantFilter: false,
- *     scrapeProductDetails: false,
+ *     scrapeProductDetails: true,   // since P5: one extra product-page fetch, not billed per row
  *     sort: "helpful"
  *   }
  *
@@ -48,10 +48,23 @@ export interface RawReview {
   productUrl: string | null;
 }
 
+export interface RawProduct {
+  title: string | null;
+  image: string | null;
+  price: number | null;
+  currency: string | null;
+  brand: string | null;
+  url: string | null;
+  stars: number | null;          // product page overall rating (all ratings, not just <=3)
+  ratingsCount: number | null;
+  reviewsCount: number | null;
+}
+
 export interface FetchResult {
   asin: string;
   countryCode: string;
   reviews: RawReview[];
+  product: RawProduct | null;    // present when scrapeProductDetails succeeded
   meta: { mode: 'mock' | 'apify'; source: string; fetchedAt: string; totalReturned: number };
 }
 
@@ -73,7 +86,7 @@ export function buildApifyInput(productUrl: string, maxReviews: number): Record<
     productUrls: [{ url: productUrl }],
     reviewsAlwaysSaveCategoryData: false,
     reviewsUseProductVariantFilter: false,
-    scrapeProductDetails: false,
+    scrapeProductDetails: true,
     sort: 'helpful',
   };
 }
@@ -85,6 +98,30 @@ export function asinToProductUrl(asin: string, countryCode: string): string {
 }
 
 type ApifyRow = Record<string, any>;
+
+/** Extract product details from a dataset row. With scrapeProductDetails=true every
+ *  row carries a `product` object; fields vary slightly between actor versions, so
+ *  parse defensively and accept nulls. */
+function extractProduct(rows: ApifyRow[]): RawProduct | null {
+  const p = rows.find((r) => r?.product && typeof r.product === 'object')?.product;
+  if (!p) return null;
+  const num = (v: unknown): number | null => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string') { const n = Number(v.replace(/[^0-9.]/g, '')); return Number.isFinite(n) && v.trim() !== '' ? n : null; }
+    return null;
+  };
+  return {
+    title: typeof p.title === 'string' && p.title.trim() ? p.title.trim() : null,
+    image: typeof p.image === 'string' && p.image ? p.image : (Array.isArray(p.images) && typeof p.images[0] === 'string' ? p.images[0] : null),
+    price: num(p.price ?? p.priceValue),
+    currency: typeof p.currency === 'string' ? p.currency : null,
+    brand: typeof p.brand === 'string' && p.brand ? p.brand : null,
+    url: typeof p.url === 'string' && p.url ? p.url : (typeof p.productUrl === 'string' ? p.productUrl : null),
+    stars: num(p.stars ?? p.rating),
+    ratingsCount: num(p.ratingsCount ?? p.totalRatings) !== null ? Math.round(Number(p.ratingsCount ?? p.totalRatings)) : null,
+    reviewsCount: num(p.reviewsCount ?? p.totalReviews) !== null ? Math.round(Number(p.reviewsCount ?? p.totalReviews)) : null,
+  };
+}
 
 function mapRow(r: ApifyRow): RawReview {
   return {
@@ -130,8 +167,19 @@ function mockFetch(asin: string, countryCode: string, maxReviews: number): Fetch
     reviewUrl: `https://www.amazon.com/gp/customer-reviews/MOCK${i}`,
     productUrl: asinToProductUrl(asin, countryCode),
   }));
+  const product: RawProduct = {
+    title: `[MOCK] Universal Phone Mount for Car Dashboard (${asin})`,
+    image: null,
+    price: 12.99,
+    currency: 'USD',
+    brand: 'MockBrand',
+    url: asinToProductUrl(asin, countryCode),
+    stars: 3.9,
+    ratingsCount: 1247,
+    reviewsCount: 832,
+  };
   return {
-    asin, countryCode, reviews,
+    asin, countryCode, reviews, product,
     meta: { mode: 'mock', source: 'mock', fetchedAt: now, totalReturned: reviews.length },
   };
 }
@@ -209,7 +257,7 @@ export async function apifyFetch(asin: string, countryCode: string, maxReviews: 
   const filtered = rows.filter((r) => Number(r.ratingScore ?? 0) <= 3);
   const reviews = filtered.map(mapRow).filter((r) => r.reviewId && r.rating > 0);
   return {
-    asin, countryCode, reviews,
+    asin, countryCode, reviews, product: extractProduct(rows),
     meta: {
       mode: 'apify', source: `${ACTOR} (run ${runId})`,
       fetchedAt: startedIso, totalReturned: reviews.length,

@@ -41,11 +41,15 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
        FROM reviews WHERE rating <= 3`,
     ).get() as { total: number; asins: number; avg_rating: number; negative2: number };
     const perAsin = db.prepare(
-      `SELECT asin, country_code, COUNT(*) AS total,
-              COALESCE(ROUND(AVG(rating), 2), 0) AS avg_rating,
-              SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS negative2,
-              MAX(review_date) AS latest_review
-       FROM reviews WHERE rating <= 3 GROUP BY asin, country_code ORDER BY total DESC`,
+      `SELECT r.asin, r.country_code, COUNT(*) AS total,
+              COALESCE(ROUND(AVG(r.rating), 2), 0) AS avg_rating,
+              SUM(CASE WHEN r.rating <= 2 THEN 1 ELSE 0 END) AS negative2,
+              MAX(r.review_date) AS latest_review,
+              p.title AS product_title, p.image AS product_image
+       FROM reviews r
+       LEFT JOIN review_products p ON p.asin = r.asin AND p.country_code = r.country_code
+       WHERE r.rating <= 3
+       GROUP BY r.asin, r.country_code ORDER BY total DESC`,
     ).all() as Array<Record<string, unknown>>;
     const jobs = db.prepare(
       `SELECT job_id, status, args, result, error, started_at, finished_at
@@ -135,7 +139,10 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
     }
     const topKeywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 12)
       .map(([word, count]) => ({ word, count }));
-    return { asin, current, trend, topKeywords };
+    const product = db.prepare(
+      'SELECT title, image, brand, price, currency, stars, ratings_count, reviews_count FROM review_products WHERE asin = ? AND country_code = (SELECT MAX(country_code) FROM reviews WHERE asin = ?)',
+    ).get(asin, asin) as Record<string, unknown> | undefined;
+    return { asin, product: product ?? null, current, trend, topKeywords };
   });
 
   // 触发抓取（异步 job）。mock 模式零成本；apify 模式受全服日限 + 并发限制保护。
@@ -235,8 +242,11 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
   app.get('/api/reviews/watch', async () => {
     const rows = getDb().prepare(
       `SELECT w.*,
-              (SELECT COUNT(*) FROM reviews r WHERE r.asin = w.asin AND r.rating <= 3) AS review_count
-       FROM review_watch w ORDER BY w.status DESC, w.id DESC`,
+              (SELECT COUNT(*) FROM reviews r WHERE r.asin = w.asin AND r.rating <= 3) AS review_count,
+              p.title AS product_title
+       FROM review_watch w
+       LEFT JOIN review_products p ON p.asin = w.asin AND p.country_code = w.country_code
+       ORDER BY w.status DESC, w.id DESC`,
     ).all() as Array<Record<string, unknown>>;
     return { items: rows, max_concurrent: maxConcurrent() };
   });
@@ -275,7 +285,8 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
     const jobs = (db.prepare(
       "SELECT COUNT(*) AS n FROM review_jobs WHERE json_extract(args, '$.asin') = ?",
     ).get(asin) as { n: number }).n;
-    return { asin, reviews, snapshots, jobs };
+    const products = (db.prepare('SELECT COUNT(*) AS n FROM review_products WHERE asin = ?').get(asin) as { n: number }).n;
+    return { asin, reviews, snapshots, jobs, products };
   }
 
   // 事务化彻底清除某 ASIN 的全部差评数据 + 可选的监控记录
@@ -285,8 +296,9 @@ export function registerReviewsAdminApi(app: FastifyInstance): void {
       const r1 = db.prepare('DELETE FROM reviews WHERE asin = ?').run(asin).changes;
       const r2 = db.prepare('DELETE FROM reviews_snapshot WHERE asin = ?').run(asin).changes;
       const r3 = db.prepare("DELETE FROM review_jobs WHERE json_extract(args, '$.asin') = ?").run(asin).changes;
-      const r4 = alsoWatch ? db.prepare('DELETE FROM review_watch WHERE asin = ?').run(asin).changes : 0;
-      return { reviews: r1, snapshots: r2, jobs: r3, watch: r4 };
+      const r4 = db.prepare('DELETE FROM review_products WHERE asin = ?').run(asin).changes;
+      const r5 = alsoWatch ? db.prepare('DELETE FROM review_watch WHERE asin = ?').run(asin).changes : 0;
+      return { reviews: r1, snapshots: r2, jobs: r3, products: r4, watch: r5 };
     });
     return tx();
   }

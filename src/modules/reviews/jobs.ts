@@ -74,7 +74,7 @@ interface PersistStats {
   ratingDistribution: Record<string, number>;
 }
 
-/** Persist fetched reviews + one snapshot atomically. */
+/** Persist fetched reviews + product details + one snapshot atomically. */
 function persist(res: FetchResult, jobId: string): PersistStats {
   const db = getDb();
   const exists = db.prepare('SELECT 1 FROM reviews WHERE review_id = ? AND asin = ?');
@@ -87,6 +87,20 @@ function persist(res: FetchResult, jobId: string): PersistStats {
        rating = excluded.rating, title = excluded.title, body = excluded.body,
        review_date = excluded.review_date, helpful_votes = excluded.helpful_votes,
        last_seen_at = excluded.last_seen_at`,
+  );
+  const upsertProduct = db.prepare(
+    `INSERT INTO review_products(asin, country_code, title, image, price, currency, brand, url,
+       stars, ratings_count, reviews_count, updated_at)
+     VALUES (@asin, @country_code, @title, @image, @price, @currency, @brand, @url,
+       @stars, @ratings_count, @reviews_count, @now)
+     ON CONFLICT(asin, country_code) DO UPDATE SET
+       title = COALESCE(excluded.title, title), image = COALESCE(excluded.image, image),
+       price = COALESCE(excluded.price, price), currency = COALESCE(excluded.currency, currency),
+       brand = COALESCE(excluded.brand, brand), url = COALESCE(excluded.url, url),
+       stars = COALESCE(excluded.stars, stars),
+       ratings_count = COALESCE(excluded.ratings_count, ratings_count),
+       reviews_count = COALESCE(excluded.reviews_count, reviews_count),
+       updated_at = excluded.updated_at`,
   );
   const dist: Record<string, number> = {};
   let newCount = 0;
@@ -107,6 +121,15 @@ function persist(res: FetchResult, jobId: string): PersistStats {
       sum += r.rating;
       const bucket = String(Math.round(r.rating));
       dist[bucket] = (dist[bucket] ?? 0) + 1;
+    }
+    if (res.product) {
+      upsertProduct.run({
+        asin: res.asin, country_code: res.countryCode,
+        title: res.product.title, image: res.product.image, price: res.product.price,
+        currency: res.product.currency, brand: res.product.brand, url: res.product.url,
+        stars: res.product.stars, ratings_count: res.product.ratingsCount,
+        reviews_count: res.product.reviewsCount, now: nowIso(),
+      });
     }
     db.prepare(
       `INSERT INTO reviews_snapshot(job_id, asin, country_code, fetched_at, total_reviews,

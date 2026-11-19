@@ -6,7 +6,7 @@
 - 反爬节奏：请求间随机延迟、概率长停顿、随机启动时间、字母顺序打乱、指数退避、连续失败熔断——**慢而稳，速度优先级最低**
 - 存储：SQLite（WAL），原始报文全量归档 `fetch_log`，接口失效后词库仍是你的
 - Web 后台：关键词管理（增删/批量导入/启停）、抓取任务、**排名趋势**（每次快照的搜索框排名对比，看联想词升降）、词库检索、API Key 与 credits 充值流水、按模块分组的数据源配置与系统设置
-- MCP：`POST /mcp`（Streamable HTTP, Bearer 认证），联想词 11 个 tool 按 credits 计费；可选开启 ASIN 差评模块（`AMZ_ENABLED_MODULES=reviews`）追加 7 个差评 tool（Apify 数据源、监控重抓、差评库检索、变化追踪）
+- MCP：`POST /mcp`（Streamable HTTP, Bearer 认证），联想词 11 个 tool 按 credits 计费；可选开启 ASIN 差评模块（`AMZ_ENABLED_MODULES=reviews`）追加 7 个差评 tool（Apify 数据源、监控重抓、差评库检索、变化追踪）；抓取时同步缓存产品页信息（标题/图片/价格/品牌，`scrapeProductDetails=true`，计费仍按评论条数）
 
 ## 快速开始（Docker）
 

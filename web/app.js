@@ -920,13 +920,18 @@ const App = {
 
       <!-- 按 ASIN 概览 -->
       <div class="card" v-if="revOverview && revOverview.perAsin.length">
-        <h3>按 ASIN 概览 <span class="muted" style="font-weight:400;font-size:12px">— 点行查看，点「清除」删除该 ASIN 的全部差评数据</span></h3>
+        <h3>按 ASIN 概览 <span class="muted" style="font-weight:400;font-size:12px">— 点行查看，点「清除」删除该 ASIN 的全部差评数据；标题来自抓取时的产品页，重抓后自动补齐</span></h3>
         <table>
-          <thead><tr><th>ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th><th style="width:70px">操作</th></tr></thead>
+          <thead><tr><th>产品 / ASIN</th><th>站点</th><th class="num">差评数</th><th class="num">均分</th><th class="num">1–2 星</th><th>最近评论</th><th style="width:70px">操作</th></tr></thead>
           <tbody>
             <tr v-for="a in revOverview.perAsin" :key="a.asin" @click="pickRevAsin(a.asin)" style="cursor:pointer"
                 :style="revFilters.asin===a.asin?'background:var(--primary-weak)':''">
-              <td class="mono"><b>{{a.asin}}</b></td><td>{{a.country_code}}</td>
+              <td style="max-width:360px">
+                <span class="mono"><b>{{a.asin}}</b></span>
+                <div v-if="a.product_title" class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px" :title="a.product_title">{{a.product_title}}</div>
+                <div v-else class="muted" style="font-size:12px;font-style:italic">标题待下次抓取补齐</div>
+              </td>
+              <td>{{a.country_code}}</td>
               <td class="num">{{a.total}}</td><td class="num">{{a.avg_rating}}</td>
               <td class="num" style="color:var(--red)">{{a.negative2}}</td><td class="muted">{{fmtDate(a.latest_review)}}</td>
               <td><button class="btn sm danger" :disabled="purgeBusy===a.asin" @click.stop="purgeData(a.asin)">{{purgeBusy===a.asin?'清除中…':'清除'}}</button></td>
@@ -939,7 +944,9 @@ const App = {
       <template v-if="revSummary">
         <div class="grid cols2">
           <div class="card">
-            <h3>评分分布 · <span class="mono">{{revSummary.asin}}</span></h3>
+            <h3>评分分布 · <span class="mono">{{revSummary.asin}}</span>
+              <span v-if="revSummary.product && revSummary.product.title" class="muted" style="font-weight:400;font-size:12px">— {{revSummary.product.title}}</span>
+            </h3>
             <template v-if="revSummary.current && revSummary.current.total">
               <div v-for="s in [{k:'s1',label:'1 星'},{k:'s2',label:'2 星'},{k:'s3',label:'3 星'}]" :key="s.k" class="rev-bar-row">
                 <span class="rev-bar-label">{{s.label}}</span>
@@ -1069,10 +1076,13 @@ const App = {
           <button class="btn sm" @click="fetchAllWatch" :disabled="watchBusy">🔄 批量重抓启用项</button>
         </div>
         <table v-if="watchList.items.length">
-          <thead><tr><th>ASIN</th><th>站点</th><th>状态</th><th>差评数</th><th>备注</th><th>最近抓取</th><th>操作</th></tr></thead>
+          <thead><tr><th>产品 / ASIN</th><th>站点</th><th>状态</th><th>差评数</th><th>备注</th><th>最近抓取</th><th>操作</th></tr></thead>
           <tbody>
             <tr v-for="w in watchList.items" :key="w.id">
-              <td class="mono"><b>{{w.asin}}</b></td>
+              <td style="max-width:340px">
+                <span class="mono"><b>{{w.asin}}</b></span>
+                <div v-if="w.product_title" class="muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px" :title="w.product_title">{{w.product_title}}</div>
+              </td>
               <td>{{w.country_code}}</td>
               <td><span class="tag" :class="w.status==='active'?'green':'gray'">{{w.status==='active'?'启用':'暂停'}}</span></td>
               <td class="num">{{w.review_count}}</td>

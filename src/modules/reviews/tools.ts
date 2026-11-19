@@ -190,7 +190,10 @@ export function buildReviewsTools({ key, clientId }: ToolBuildContext): ToolCont
           }
         }
         const topKeywords = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([word, count]) => ({ word, count }));
-        return { asin, current, trend, topKeywords };
+        const product = db.prepare(
+          'SELECT title, brand, stars, ratings_count, reviews_count FROM review_products WHERE asin = ? LIMIT 1',
+        ).get(asin) as Record<string, unknown> | undefined;
+        return { asin, product: product ?? null, current, trend, topKeywords };
       }),
     },
     {
